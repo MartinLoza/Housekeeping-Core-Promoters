@@ -1,0 +1,119 @@
+---
+title: "Select regions from 50 cts"
+author: "Martin loza"
+date: "2022/11/14"
+---
+
+In a previous analysis I filtered cancer and treated cell types/tissues from the original ABC enhancers.
+
+In this notebook I aim to randomly select 50 cell types to use in further analyses.
+
+NOTE. 
+- The regions were already filtered by ABC.score >= 0.15.
+- Regions and target's tss were lifted up to hg38. 
+- Target genes were annotated
+- Regions targeting genes not found in ENSEMBLE annotations were filtered.
+- Regions targeting cancer or treated cell types were filtered. 
+
+```{r setup}
+library(dplyr)
+library(GenomicRanges)
+library(here)
+library(bedr)
+library(ggplot2)
+
+## Global variables
+date = "221114"
+seed = 777
+in_dir <- "Data/"
+out_dir = in_dir
+```
+
+## Load data
+
+Load enhancers data 
+
+```{r}
+enhancers <- readRDS(file = paste0(in_dir, "/raw_enhancers/merged/04_raw_enhancers_hg38_gene_annotated_cts_filtered_221114.rds"))
+```
+
+## Select cell types
+
+Randomly select 50 cell types
+
+```{r}
+#set number of cell types
+n = 50
+#get unique cell types labels
+celltypes <- unique(enhancers$CellType)
+#set seed for reproducibility and randomly select the idx of cell types
+set.seed(seed)
+sel_celltypes <- sample(x = celltypes, size = n, replace = FALSE)
+#get current selected enhancers
+sel_enhancers <- enhancers %>% filter(CellType %in% sel_celltypes)
+cat("Selected cell types: \n")
+unique(enhancers$CellType)
+```
+
+## Short analysis with protein coding genes
+
+Load ENSEMBL annotated genes
+
+```{r}
+ensembl_genes <- readRDS(file = "/Volumes/MARTIN_LOZA/Projects/Enhancer_Grammar/Data/Commonly_used/hg38/hg38_genes_all_annotated_221113.rds")
+```
+
+```{r}
+#get genes targeted in the selected dataset
+sel_data_genes <- sel_enhancers %>% filter(!duplicated(TargetGene)) %>% select(TargetGene,gene_biotype)
+cat("Biotype of selected regions:\n")
+sel_data_genes %>% pull(gene_biotype) %>% table() %>% sort(decreasing = TRUE)
+```
+
+The selected regions target 17592 protein coding genes
+
+```{r}
+cat("Number of protein coding genes in the ENSEMBL gene dataset:\n")
+ensembl_genes %>% filter(gene_biotype=="protein_coding") %>% nrow()
+cat("Number of protein coding genes in original 71 cell types regions' data frame:\n")
+enhancers %>% filter(!duplicated(TargetGene)) %>% filter(gene_biotype == "protein_coding") %>% nrow()
+cat("Percentage of PCG in the regions data frame:\n")
+paste0(100*round((enhancers %>% filter(!duplicated(TargetGene)) %>% filter(gene_biotype == "protein_coding") %>% nrow())/(ensembl_genes %>% filter(gene_biotype=="protein_coding") %>% nrow()), digits = 5), "%")
+cat("Number of protein coding genes in selected 50 cell types regions' data frame:\n")
+sel_enhancers %>% filter(!duplicated(TargetGene)) %>% filter(gene_biotype == "protein_coding") %>% nrow()
+cat("Percentage of PCG in the selected regions data frame:\n")
+paste0(100*round((sel_enhancers %>% filter(!duplicated(TargetGene)) %>% filter(gene_biotype == "protein_coding") %>% nrow())/(ensembl_genes %>% filter(gene_biotype=="protein_coding") %>% nrow()), digits = 5), "%")
+```
+## Save data
+
+Save the selected regions
+
+```{r}
+saveRDS(object = sel_enhancers, file = paste0(in_dir, "/raw_enhancers/merged/05_raw_enhancers_selected_50cts_",date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

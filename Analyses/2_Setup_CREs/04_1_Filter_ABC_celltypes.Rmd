@@ -1,0 +1,85 @@
+---
+title: "Analysis of cell types"
+author: "Martin Loza"
+date: "2022/11/14"
+---
+
+In this notebook I aim to analyse the cell-types/tissues included in the ABC's database to filter cancer cells or cells with some treatment. 
+
+```{r setup}
+library(here)
+library(dplyr)
+library(stringr)
+
+## Global variables
+date = "221114"
+out_dir = "/Data/"
+```
+
+## Load data
+
+Download the ABC cell types information. This data is supplied in the supplementary table 2 from the publication: https://www.nature.com/articles/s41586-021-03446-x
+
+Download the table and save it as ABC_celltypes_info.tsv
+
+```{r}
+ct_md_raw <- read.table(file = here("Data/Nasser/ABC_celltypes_info.tsv"), sep = "\t", header = TRUE)
+head(ct_md_raw$ABC_celltype_id)
+```
+
+The cell-type information is in the "ABC_celltype_id" column.
+
+## Filter cells 
+
+### Find treated cells 
+
+We would like to filter cells with some treatment.
+Then, we will search for some keywords as "treated", "hour", and "hr" .
+Also I found some treated cells that can be identified with the string "ATAC"
+
+```{r}
+ct_names <- ct_md_raw$ABC_celltype_id
+```
+
+```{r}
+#Get the cell's index to remove
+idx <- Reduce(f = union, x = list(which(str_detect(string = ct_names, pattern = "treated")),
+                                  which(str_detect(string = ct_names, pattern = "hour")),
+                                  which(str_detect(string = ct_names, pattern = "hr-")),
+                                  which(str_detect(string = ct_names, pattern = "ATAC"))))
+
+```
+
+### Find cancer cells 
+
+```{r}
+# Manually selected cancer cells 
+cancer_cells <- c("K562-Roadmap", "HepG2-Roadmap", "MCF-7-ENCODE",
+                  "Panc1-ENCODE", "HCT116-ENCODE", "Jurkat-Engreitz",
+                  "SK-N-SH-ENCODE", "GM12878-Roadmap", "A673-ENCODE", "BJAB-Engreitz", "HAP1", "HT29", "HeLa-S3-Roadmap",
+                  "Karpas-422-ENCODE", "LNCAP", "LoVo", "MCF10A-Ji2017", "MDA-MB-231", "MM.1S-ENCODE", "NCCIT", 
+                  "OCI-LY7-ENCODE", "PC-9-ENCODE", "THP-1_macrophage-VanBortle2017", "THP-1_monocyte-VanBortle2017",
+                  "THP1-Engreitz", "U937-Engreitz")
+# Get the index of cancer cells to remove
+idx <- union(idx, which(ct_names %in%  cancer_cells))
+```
+
+```{r}
+#check the cells to filter
+ct_names[idx]
+```
+
+## Filter cells 
+
+```{r}
+sel_ct_md <- ct_md_raw %>% filter(ABC_celltype_id %in% ct_names[-idx])
+sel_ct_md$ABC_celltype_id
+```
+
+## Save selected cells meta-data
+
+```{r}
+saveRDS(object = sel_ct_md, 
+        file = paste0(out_dir, "selected_ABC_ct_", date, ".rds"))
+```
+

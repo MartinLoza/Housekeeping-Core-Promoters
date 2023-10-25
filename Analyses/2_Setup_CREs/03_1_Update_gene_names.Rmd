@@ -1,0 +1,406 @@
+---
+title: "Update target TSS coordinates"
+author: "Martin Loza"
+data: "2022/11/17"
+---
+
+In previous analyses I filtered the ABC predictions using a threshold of 0.015 of the abc_score and lifted up the coordinates of the regions, e.g. hg19 -> hg38
+
+## Init
+
+```{r setup}
+library(dplyr)
+library(here)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(stringr)
+
+## Global variables
+date = "221117"
+#Set the files' directory (Data's folder by cell type)
+in_dir <- "Data/raw_enhancers/merged/"
+out_dir = in_dir
+
+## Local functions
+MapGeneLabels <- function(genes_labels = NULL, from_type = NULL, to_type = NULL){
+  mapping <- AnnotationDbi::select(x = org.Hs.eg.db, 
+                                   keys = genes_labels,
+                                   keytype=from_type,
+                                   columns = to_type)
+  colnames(mapping) = c("original_name", "mapped_name")
+  #remove unmapped labels
+  mapping <- mapping %>% filter(!is.na(mapped_name))
+  return(mapping)
+}
+
+FilterDuplicated <- function(mapping = NULL, column = NULL){
+  dup_names <- names(which(table(mapping[[column]]) > 1))
+  mapping <- mapping %>% filter(!mapping[[column]] %in% dup_names)
+  return(mapping)
+}
+
+#Setup mapping genes with label as the anchor
+SetupMapping <- function(mapping = NULL, genes_column = "gene_name"){
+  g_abc <- unique(edata$TargetGene)
+  #Filter mapped names not contained in the ensemble genes
+  mapping <- mapping %>% filter(mapped_name %in% genes[[genes_column]])
+  #Filter duplicated elements
+  mapping <- FilterDuplicated(mapping = mapping, column = "mapped_name")
+  mapping <- FilterDuplicated(mapping = mapping, column = "original_name")
+  #if the mapping columns from genes is not the gene name, we need to get the name
+  if(genes_column != "gene_name"){
+    #get the names using the genes_column
+    tmp_df <- genes %>% dplyr::select(.data[[genes_column]], gene_name) %>% filter(.data[[genes_column]] %in% mapping$mapped_name)
+    #Filter duplicated elements
+    tmp_df <- tmp_df %>% filter(!(duplicated(gene_name)))
+    #prepare to transfer, arrange the tmp_df as the rows in mapping
+    rownames(tmp_df) <- tmp_df[[genes_column]]
+    tmp_df <- tmp_df[mapping$mapped_name,]
+    #if the mapping ids match the order of the genes ids, transfer the gene names
+    if(identical(tmp_df[[genes_column]], mapping[["mapped_name"]])){
+      mapping$mapped_name <- tmp_df$gene_name
+    }
+  }
+  #Let's filter mapped names which are already in the abc targets
+  mapping <- mapping %>% filter(!mapped_name %in% g_abc)
+  return(mapping)
+}
+
+#Update the abc data with the new label information
+UpdateABCTargets <- function(abc_data = NULL, mapping = NULL){
+  #for each row of mapping
+  for(r in seq_len(nrow(mapping))){
+    #get the current original names
+    original_name = mapping[r,"original_name"]
+    #get the current mapped names
+    mapped_name = mapping[r,"mapped_name"]
+    #get the index of regions targeting the original names
+    idx <- which(abc_data$TargetGene == original_name)
+    #update the names
+    abc_data[idx,"TargetGene"] <- mapped_name
+  }
+  return(abc_data)
+}
+
+#Map gene ids
+MapGeneIds <- function(genes_labels = NULL, gene_pattern = NULL, from_type = NULL, to_type = NULL){
+  #get only the labels with the gene_pattern
+  if(!is.null(gene_pattern)){
+    genes_labels <- genes_labels[str_detect(string = genes_labels, pattern = gene_pattern)]
+    genes_labels <- str_replace(string = genes_labels, pattern = gene_pattern, replacement = "")
+  }
+  #find the mappings
+  mapping <- MapGeneLabels(genes_labels = genes_labels, 
+                           from_type = from_type, to_type = to_type)
+  
+  #return the original labels
+  if(!is.null(gene_pattern)){
+    mapping$original_name <- paste0(gene_pattern,mapping$original_name)
+  }
+  return(mapping)
+}
+```
+
+## Load data
+
+Load the enhancers data
+
+```{r}
+edata <- readRDS(file = paste0(in_dir,"/02_raw_enhancers_hg38_221112.rds"))
+```
+
+Load the transcripts data from ENSEMBL hg38
+
+```{r}
+genes <- readRDS("Data/transcripts_ENSEMBL_hg38.rds")
+```
+
+## Setup
+
+Filter gene names with NA
+
+```{r}
+genes <- genes %>% filter(!is.na(gene_name))
+```
+
+Do we have duplicated gene names, e.g. same gene with more than one version.
+
+```{r}
+sum(duplicated(genes$gene_name))
+```
+
+This is normal, because we have more than one transcript for each gene.
+
+Let's save the original ABC target gene names
+
+```{r}
+edata <- edata %>% mutate(abc_target_gene = TargetGene)
+```
+
+## Map missing gene names 
+
+Let's get the target genes in ABC
+
+```{r}
+genes_abc <- unique(edata$TargetGene)
+```
+
+```{r}
+cat("All the genes in ABC data are included in the ENSEMBL genes data frame? \n")
+sum(genes_abc %in% genes$gene_name) == length(genes_abc)
+cat("Number of ABC targets missing in the ENSEMBL gene's data?\n")
+sum(!genes_abc %in% genes$gene_name)
+cat("Percentage of number of ABC targets missing in the ENSEMBL gene's data?\n")
+paste0(100*sum(!genes_abc %in% genes$gene_name)/length(genes_abc)," %")
+```
+Around 11 % of genes are missing... this is not so good. 
+I think its because of the different databases used.
+
+Let's try to get the missing genes in a different way.
+
+Let's get the missing genes first
+
+```{r}
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+#short test
+length(unique(missing_genes)) == length(missing_genes)
+```
+
+We can use the org.Hs.eg.db data base to change the gene name to ALIAS id and try to recover genes with another name.
+
+Mapping options
+
+```{r}
+columns(org.Hs.eg.db)
+```
+
+### Map the missing names using the ALIAS
+
+Map the missing genes as ALIAS
+```{r}
+mapping <- MapGeneLabels(genes_labels = missing_genes, from_type = "ALIAS", to_type = "SYMBOL")
+```
+We need to setup the mapping to filter duplicated labels and filter the new names that are already in the abc gene names
+
+```{r}
+#set up mapping labels
+mapping <- SetupMapping(mapping = mapping, genes_column = "gene_name")
+cat("Number of mapping elements:\n", nrow(mapping))
+```
+
+We have 918 mapped names. Let's update the regions names (these are the oldest annotations)
+
+```{r}
+edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+```
+
+Update genes_abc and missing genes
+
+```{r}
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("Number of missing genes: \n", length(missing_genes))
+```
+
+We can use the same process using different columns from the org.Hs.eg.db package, e.g. symbol, alias, entrezid, ensemble gene id, ensemble transcript id, etc. 
+The process is basically the same, but we need to be careful when using ids (instead of gene names), to map the gene name and not the ids, we don't want target genes with an id instead of gene name. Also some genes are LOC_ENTREZID, so we need to remove the LOC part and use only the ENTREZID. I prepared functions to ease this process, but we need to be careful with the options selected on each case
+
+### Map the missing names using the SYMBOL
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, from_type = "SYMBOL", to_type = "ALIAS")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "gene_name")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+Nothing here.
+
+### Map the missing names using the SYMBOL and ENSEMBLE GENE ID
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, from_type = "SYMBOL", to_type = "ENSEMBL")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "gene_id")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+
+### Map the missing names using the ALIAS and ENSEMBLE GENE ID
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, from_type = "ALIAS", to_type = "ENSEMBL")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "gene_id")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+### Map the missing names using the ENTREZID
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, gene_pattern = "LOC", from_type = "ENTREZID", to_type = "SYMBOL")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "gene_name")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+
+### Map the missing names using the ENTREZID from ALIAS
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, gene_pattern = "LOC", from_type = "ENTREZID", to_type = "ALIAS")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "gene_name")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+
+### Map the missing names using the ENSEMBLTRANS
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, from_type = "SYMBOL", to_type = "ENSEMBLTRANS")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "transcript_id")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+
+```{r}
+#Get mapping of LOC genes using the entrezid
+mapping <- MapGeneIds(genes_labels = missing_genes, from_type = "ALIAS", to_type = "ENSEMBLTRANS")
+#Setup mappings (filter duplicated labels and labels already in the abc targets)
+mapping <- SetupMapping(mapping = mapping, genes_column = "transcript_id")
+cat("\nNumber of found mappings:\n", nrow(mapping))
+#if we found some mapping labels
+if(nrow(mapping) != 0){
+  #update abc targets
+  edata <- UpdateABCTargets(abc_data = edata, mapping = mapping)
+}
+#Update genes_abc and missing genes
+genes_abc <- unique(edata$TargetGene)
+missing_genes <- genes_abc[!(genes_abc %in% genes$gene_name)]
+cat("\nNumber of missing genes: \n", length(missing_genes))
+rm(mapping)
+```
+## Final check
+
+Let's check that we didn't assigned a transcript or gene id in the target genes' name.
+
+```{r}
+any(genes$transcript_id %in% edata$TargetGene)
+any(genes$gene_id %in% edata$TargetGene)
+```
+
+Good.
+
+Let's check some of the still missing genes
+
+```{r}
+missing_genes[1:50]
+```
+Many LOC genes, let's get the percentage of genes in missing_genes that are LOC related
+
+```{r}
+cat("Number of genes with LOC:\n")
+sum(str_detect(string = missing_genes, pattern = "LOC"))
+cat("Percentage of genes with LOC:\n")
+100*sum(str_detect(string = missing_genes, pattern = "LOC"))/length(missing_genes)
+```
+
+```{r}
+missing_genes[str_detect(string = missing_genes, pattern = "LOC", negate = TRUE)][1:50]
+```
+
+I checked some of these names, they map to a ensembl gene or transcript id, but then the retreived gene name is already in the genes_abc. Then, I think this is all for now.
+
+That's the end. Let's save the edata 
+
+```{r}
+saveRDS(object = edata, file = paste0(out_dir, "/03_1_hg38_genes_updated_",date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+

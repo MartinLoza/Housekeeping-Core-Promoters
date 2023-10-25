@@ -1,0 +1,207 @@
+---
+title: "Define universe"
+author: "Martin loza"
+date: "2022/11/14"
+---
+
+In a previous notebook I matched the annotations from ENSEMBL genes and ABC target genes. Even though I couldn't match around 1000 target genes, the majority of the ABC target were properly matched.
+
+In this notebook I aim to define a gene and enhancers universe to use in further analyses.
+
+NOTE. 
+- The regions were already filtered by ABC.score >= 0.15.
+- Regions and target's tss were lifted up to hg38. 
+- Target genes were updated
+
+These universes will be used in downstream analyses of the ABC enhancers.
+
+```{r setup}
+library(here)
+library(dplyr)
+
+## Global variables
+date = "221121"
+seed = 777
+in_dir <- "Data/"
+out_dir = in_dir
+```
+
+## Load data
+
+Load the regions
+
+```{r}
+edata <- readRDS(file = paste0(in_dir,"/raw_enhancers/merged/03_1_hg38_genes_updated_221117.rds"))
+```
+
+Load the ENSEMBL transcripts and genes
+
+```{r}
+genes <- readRDS(file ="Data/Commonly_used/hg38/genes_ENSEMBL_hg38.rds")
+transcripts <- readRDS(file ="Data/Commonly_used/hg38/transcripts_ENSEMBL_hg38.rds")
+```
+
+Add tss to transcripts and genes
+```{r}
+genes <- genes %>% mutate(tss = if_else(condition = strand == "+", true = start, false = end))
+transcripts <- transcripts %>% mutate(tss = if_else(condition = strand == "+", true = start, false = end))
+```
+
+Do we have duplicated gene names, e.g. same gene with more than one version.
+
+```{r}
+sum(duplicated(genes$gene_name))
+```
+
+Yes, there are 1200 duplicated elements.
+
+Let's transform the version into integer values
+
+```{r}
+genes <- genes %>% mutate(gene_version = as.integer(gene_version))
+```
+
+Let's get the duplicated genes
+
+```{r}
+dup_gene_names <- genes %>% filter(duplicated(gene_name)) %>% pull(gene_name) %>% unique()
+head(dup_gene_names)
+```
+
+Let's split the genes into unique and duplicated 
+
+```{r}
+unique_genes <- genes %>% filter(!gene_name %in% dup_gene_names)
+dup_genes <- genes %>% filter(gene_name %in% dup_gene_names)
+```
+
+Let's choose the highest version of duplicated genes
+
+Choose the highest version
+```{r}
+# for each duplicated gene
+for(g in dup_gene_names){
+  #get the duplicated rows
+  dup_rows <- dup_genes %>% filter(gene_name == g)
+  #select the highest version
+  sel_row <- dup_rows %>% filter(gene_version == max(gene_version))
+  #if more than one row, e.g. more than one row matching with the highest version of the gene
+  if(nrow(sel_row) > 1){
+    #select the first row
+    sel_row <- sel_row[1,]
+  }
+
+  #if filter_results does not exist
+  if(!exists("filter_results")){
+    #init filter_results as the sel_row
+    filter_results <- sel_row
+  }else{
+    #update the results datasets
+    filter_results <- rbind(filter_results, sel_row)
+  }
+}#end
+rm(sel_row, dup_rows, g, dup_gene_names, dup_genes)
+```
+
+update the genes dataset
+
+```{r}
+# merged unique genes and the genes resulting after filtering duplicated genes
+genes <- rbind(unique_genes, filter_results)
+rm(unique_genes, filter_results)
+```
+
+Test again
+
+```{r}
+sum(duplicated(genes$gene_name))
+```
+
+Short test
+
+All the gene names are in the transcripts' gene names
+
+```{r}
+sum(genes$gene_name %in% transcripts$gene_name) == nrow(genes)
+```
+
+Yes, no problem.
+
+## Define universe of enhancers
+
+```{r}
+#get abc genes
+abc_genes <- unique(edata$TargetGene)
+#get ensembl_genes
+ensemble_genes <- unique(genes$gene_name)
+cat("Number of genes in ABC data:\n")
+length(abc_genes)
+cat("Number of genes in ENSEMBL data:\n")
+length(ensemble_genes)
+cat("Number of matching genes:\n")
+sum(abc_genes %in% ensemble_genes)
+```
+Let's get the matching gene_names
+
+```{r}
+matching_genes <- intersect(ensemble_genes, abc_genes)
+```
+
+## Define the regions universe 
+
+```{r}
+original_abc_number <- nrow(edata)
+cat("Original number of regions in the ABC data:\n")
+original_abc_number
+edata <- edata %>% filter(TargetGene %in% matching_genes)
+cat("Number of regions after filtering:\n")
+nrow(edata)
+cat("Pecentage retained:\n")
+paste0(100*round(nrow(edata)/original_abc_number,digits = 5), "%")
+```
+
+We lost around 3% of the abc data. I think this is acceptable
+
+## Define the regions universe
+
+```{r}
+#get pcg in ensemble
+ensemble_pcg <- genes %>% filter(gene_biotype == "protein_coding") %>% pull(gene_name) %>% unique()
+cat("Number of PCG in ENSEMBLE data:\n")
+length(ensemble_pcg)
+cat("Number of ENSEMBL PCG in the genes-universe:\n")
+sum(ensemble_pcg %in% matching_genes)
+cat("Percentage of PCG:\n")
+paste0(100*round(sum(ensemble_pcg %in% abc_genes)/length(ensemble_pcg), digits = 5), "%")
+```
+
+We will loose around 6% of the PCG annotated in ENSEMBL... This is kind of OK.
+
+Let's get this project's genes and transcripts universe
+
+```{r}
+genes <- genes %>% filter(gene_name %in% matching_genes)
+transcripts <- transcripts %>% filter(gene_name %in% matching_genes)
+```
+
+Universe distribution
+
+```{r}
+genes %>% filter(!duplicated(gene_name)) %>% pull(gene_biotype) %>%  table() %>% sort(decreasing = TRUE) 
+```
+
+Final check
+```{r}
+sum(unique(edata$TargetGene)%in% genes$gene_name) == length(unique(edata$TargetGene))
+sum(genes$gene_name %in% edata$TargetGene) == nrow(genes)
+sum(unique(transcripts$gene_name) %in% edata$TargetGene) == length(unique(transcripts$gene_name))
+```
+# Save data
+
+```{r}
+saveRDS(object = edata, file = paste0(out_dir, "/raw_enhancers/merged/03_2_hg38_regions_universe_", date, ".rds"))
+saveRDS(object = genes, file = paste0(out_dir,"/hg38/hg38_genes_universe_", date,".rds"))
+saveRDS(object = transcripts, file = paste0(out_dir,"/hg38/hg38_transcripts_universe_", date,".rds"))
+```
+
+

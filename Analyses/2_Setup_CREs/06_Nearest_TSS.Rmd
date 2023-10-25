@@ -1,0 +1,287 @@
+---
+title: "Get closest gene for each of the regions"
+author: "Martin loza"
+date: "2022/11/14"
+---
+
+In a previous notebook named "05_Select_50_cts" I randomly selected 50cts from the filtered ABC regions. 
+
+In this notebook I aim to find the nearest ENSEMBL transcript for each selected region.
+
+NOTE. 
+- The regions were already filtered by ABC.score >= 0.15.
+- Regions and target's tss were lifted up to hg38. 
+- Target genes were annotated
+- Regions targeting genes not found in ENSEMBLE annotations were filtered.
+- Regions targeting cancer or treated cell types were filtered.
+- Selected regions from 50 cell types.
+
+This closest gene annotations will help us to further annotate the regions.
+
+```{r setup}
+library(here)
+library(dplyr)
+
+## Global variables
+date = "221114"
+seed = 777
+in_dir <- "Data/"
+out_dir = in_dir
+
+## Global functions
+source("~/Analysis/Functions.R")
+
+## Local functions 
+
+#Test closest gene by chromosome. Check if there are no crosses by chromosomes
+TestClosestGene <- function(regions_df = NULL, genes_df = NULL){
+  #get current chromosome
+  ch <- as.character(unique(regions_df$chr))
+  #get genes in the chromosome
+  genes_chr <- genes_df %>% filter(chr == ch)
+  ##TEST. ALL GENES IN THE SAME CHROMOSOME
+  t1 <- sum(regions_df$closest_gene %in% genes_chr$gene_name) == nrow(regions_df)
+  ##TEST. No genes from other chromosomes
+  other_chr <- genes_df %>% filter(chr != ch)
+  t2 <- sum(regions_df$closest_gene %in% other_chr$gene_name) == 0
+  
+  r <- (paste0(ch, ": ", if_else(condition = sum(t1,t2)==2, true = "PASSED", false = "NOT-PASSED")))
+  return(r)
+}
+```
+
+## Load data
+
+Load raw enhancers data 
+
+```{r}
+edata <- readRDS(file = paste0(in_dir, "/raw_enhancers/merged/05_raw_enhancers_selected_50cts_221114.rds"))
+```
+
+Load genes universe
+
+```{r}
+genes <- readRDS(file = paste0(in_dir,"/hg38/hg38_genes_universe_221114.rds"))
+```
+
+## Preliminary analysis
+
+short test
+```{r}
+any(duplicated(genes$gene_name))
+```
+
+```{r}
+#get genes in the selected data
+regions_genes <- edata %>% filter(!duplicated(TargetGene)) %>% pull(TargetGene)
+cat("Number of genes in the universe:\n")
+nrow(genes)
+cat("Number of genes in the selected regions:\n")
+length(regions_genes)
+```
+
+```{r}
+#get regions' pcg
+regions_pcg <- edata %>% filter(!duplicated(TargetGene)) %>% filter(gene_biotype == "protein_coding") %>% pull(TargetGene)
+#get universe pcg
+pcg <- genes %>% filter(gene_biotype == "protein_coding") %>% pull(gene_name)
+cat("Number of missing PCG in the selected data:\n")
+sum(!pcg %in% regions_pcg)
+cat("Percentage missing:\n")
+paste0(100*round(sum(!pcg %in% regions_pcg)/length(pcg),digits = 5), "%")
+```
+
+The selected regions covers around the 97% of the pcg in the universe. 
+
+```{r}
+rm(pcg, regions_genes, regions_pcg)
+```
+
+## Get nearest gene
+
+I would like to annotate the regions using the closest gene from the universe
+
+We need unique ids for each enhancer. Let's setup the regions. 
+```{r}
+edata <- edata %>% SetupRegions()
+```
+
+let's standardize the tss and set the distance to target gene
+```{r}
+edata <- edata %>% mutate(tss = TargetGeneTSS)
+edata <- edata %>% mutate(distance = abs(tss - center))
+edata <- edata %>% mutate(distance_signed = tss-center)
+```
+
+```{r}
+colnames(edata)
+```
+
+
+```{r}
+CheckEnhancers(enhancers = edata)
+```
+we have duplicated ids, this is normal.
+
+The next process might be highly memory consuming. Therefore it is important to reduce the number of columns. After we annotate the closest gene, we can incorporate the new columns to the original edata. 
+
+Also, in thise analysis we only care about the unique regions. We can get the closest gene of a reduced-unique regions dataset and later transfer the new anntations to the complete edata. 
+
+```{r}
+#get unique regions data
+edata_unique <- edata %>% filter(!duplicated(region_id))
+#select columns in edata
+sel_columns <- c("chr", "start","end","center", "length", "region_id")
+edata_unique <- edata_unique %>% select(all_of(sel_columns))
+#init the closest gene as NA
+edata_unique <- edata_unique %>% mutate(closest_gene = NA)
+#init distance to closest gene
+edata_unique <- edata_unique %>% mutate(dist_to_closest_gene = 0)
+```
+
+For each unique id, we want to get the closest gene
+
+```{r}
+#the process need to be done by chromosome
+chromosomes <- levels(edata_unique$chr)
+chr_edata_unique <- lapply(X = chromosomes, FUN = function(ch){
+  #get the regions in the current chromosome
+  chr_regions <- edata_unique %>% filter(chr == ch)
+  #get the genes in the current chromosome
+  chr_genes <- genes %>% filter(chr == ch)
+  
+  #for each row in the chr_regions
+  for(r in seq_len(nrow(chr_regions))){
+    #get the center of current row
+    c_center = chr_regions[r,"center"]
+    #get the index of the closest gene
+    min_ct_idx <- which.min(x = abs(c_center - chr_genes$tss))
+    
+    #short test
+    if(length(min_ct_idx) >1){
+      warning("Error. More than one closest gene. Choosing the first one in the list",call. = TRUE)
+      min_ct_idx <- min_ct_idx[1]
+    }
+    
+    #assign the closest gene
+    chr_regions[r,"closest_gene"] <- chr_genes$gene_name[min_ct_idx]
+    #assign distance the closest gene
+    chr_regions[r,"dist_to_closest_gene"] <- chr_genes$tss[min_ct_idx] - c_center
+  }
+  return(chr_regions)
+})
+```
+
+```{r}
+sapply(X = chr_edata_unique, FUN = TestClosestGene, genes_df = genes)
+```
+For test, let's keep both objects of the unique edata
+
+```{r}
+edata_unique_annotated <- Reduce(f = rbind, x = chr_edata_unique)
+```
+
+
+```{r}
+cat("All unique regions in the annotated regions ?\n")
+sum(edata_unique_annotated$region_id %in% edata_unique$region_id) == nrow(edata_unique)
+```
+
+Everything look OK, we can keep only the annotated regions and used them to annotate the complete edata
+
+```{r}
+rm(edata_unique)
+```
+
+Let's use the regio_id as anchors to transfer the annotations
+
+```{r}
+#set the region_id as rownames to subset the data
+rownames(edata_unique_annotated) <- edata_unique_annotated$region_id
+#sort the edata_unique_annotated as the edata order
+edata_unique_annotated <- edata_unique_annotated[edata$region_id,]
+```
+
+Short test
+
+Same region_ids
+```{r}
+identical(edata$region_id, edata_unique_annotated$region_id)
+```
+
+Let's transfer the annotations
+
+```{r}
+edata <- edata %>% mutate(closest_gene = edata_unique_annotated$closest_gene,
+                          dist_to_closest_gene = edata_unique_annotated$dist_to_closest_gene)
+```
+
+Short test
+
+Closest_gene_distance and distance to target gene match?
+```{r}
+t <- edata %>% filter(closest_gene == TargetGene) %>% select(distance, dist_to_closest_gene)
+t <- t %>% mutate(dist_to_closest_gene = abs(dist_to_closest_gene))
+#the distances match?
+identical(t %>% filter(dist_to_closest_gene == distance), t)
+```
+
+Yes, the distances matches.
+
+## Save data 
+
+```{r}
+saveRDS(object = edata, file = paste0(out_dir,"/raw_enhancers/merged/06_raw_selected_annotated_closest_gene_", date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

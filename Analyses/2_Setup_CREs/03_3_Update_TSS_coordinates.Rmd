@@ -1,0 +1,108 @@
+---
+title: "Update target TSS coordinates"
+author: "Martin Loza"
+data: "2022/11/18"
+---
+
+In a previous notebook, I defined the universe of regions and genes to use
+
+In this notebook I aim to update the target genes TSS using the gene universe
+
+NOTE. 
+- The regions were already filtered by ABC.score >= 0.15.
+- Regions and target's tss were lifted up to hg38. 
+- Target genes were updated
+- Genes and regions universe were defined
+
+This process was more complicated than I expected, then, for now I will use the genes universe to update the TSS. We should notice that this means that the TSS could be further away than the ABC tss because the genes data set uses the minimum and maximum locations for a given set of transcripts from the same gene. Therefore, if I use these coordinates, the genes TSS could be further away. 
+
+## Init
+
+```{r setup}
+library(dplyr)
+library(here)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(stringr)
+
+## Global variables
+date = "221121"
+#Set the files' directory (Data's folder by cell type)
+in_dir <- "Data/"
+out_dir = in_dir
+```
+
+## Load data
+
+Load the enhancers
+
+```{r}
+edata <- readRDS(file = paste0(in_dir,"/raw_enhancers/merged/03_2_hg38_regions_universe_221121.rds"))
+```
+
+Load the genes data from ENSEMBL hg38
+
+```{r}
+genes <- readRDS(file ="/Data/hg38/hg38_genes_universe_221121.rds")
+```
+
+## Update the gene coordiantes and add annotations
+
+Let's save the previous TSS 
+
+```{r}
+edata <- edata %>% mutate(tss_hg19 = TargetGeneTSS)
+```
+
+Now, I would like to update the genes coordinates and add the gene annotations
+
+First, we need to arrange the gene dataset in the same order as the edata
+
+```{r}
+cat("Do we have duplicated gene names in the ENSEMBL genes?\n")
+any(duplicated(genes$gene_name))
+cat("All the ABC target genes in the ENSEMBLE gene data?\n")
+sum(edata$TargetGene %in% genes$gene_name) == nrow(edata)
+```
+
+All the ABC target genes are in the ENSEMBL gene data frame, and there is no duplicated gene_name. Then, we can use this information as anchors to the ABC edata.
+
+```{r}
+#set rownames as the gene names
+rownames(genes) <- genes$gene_name
+#sort the genes to match the edata order
+genes <- genes[edata$TargetGene,]
+```
+
+```{r}
+cat("edata's TargetGene match the genes's gene_name?\n")
+identical(genes$gene_name, edata$TargetGene)
+```
+
+The edata's TargetGene match the gene's gene_name. We can transfer the metadata
+
+```{r}
+#update the TSS coordinates
+edata$TargetGeneTSS <- genes$tss
+#add gene biotype annotation
+edata <- edata %>% mutate(target_gene_biotype = genes$gene_biotype)
+#add gene strand annotation
+edata <- edata %>% mutate(target_gene_strand = genes$strand)
+```
+
+Final distribution of enhancers target genes' annotations
+
+```{r}
+genes %>% filter(!duplicated(gene_name)) %>% pull(gene_biotype) %>% table() %>% sort(decreasing = TRUE)
+```
+We have a total of 18229 protein coding genes targeted by ABC enhancers. 
+
+## Save data
+
+```{r}
+saveRDS(object = edata, file = paste0(out_dir, "/raw_enhancers/merged/03_3_raw_enhancers_hg38_gene_annotated_",date,".rds"))
+```
+
+
+
+

@@ -1,0 +1,317 @@
+---
+title: "Change coordinates of regions (hg19 -> hg38)"
+author: "Martin Loza"
+data: "2022/11/12"
+---
+
+In a previous notebook I filtered the ABC predictions using a threshold of 0.015 of the abc_score.
+
+In this notebook I aim to change the coordinates (hg19 -> hg38) of the selected regions. 
+I will use the ENSEMBLE webtool to change the coordinates (https://asia.ensembl.org/Homo_sapiens/Tools/AssemblyConverter).
+
+This process can be high time consuming, then I will divide the process in two parts:
+- 1. Get the new coordinates of the enhancers from the ENSEMBL webtool,
+- 2. Map the new coordinates. This second process is hard time consuming, then the code will be in an .r file that can be used in a cloud server.
+
+NOTE. The cell-type' regions were already filtered by ABC.score >= 0.15 
+
+## Init
+
+```{r setup}
+library(dplyr)
+library(here)
+
+## Global variables
+date = "221112"
+#Set the files' directory (Data's folder by cell type)
+#change/add your Data directory.
+in_dir <- "Data/raw_enhancers/"
+out_dir = paste0(in_dir,"merged/")
+```
+
+## Load data
+
+Load the enhancers data of the selected cell-types
+
+```{r}
+#Get the files in the input directory
+files <- list.files(path = in_dir)
+#Read the files
+edata_ls <- lapply(X = files, FUN = function(f){
+  #Set data's directory
+  data <- readRDS(file = paste0(in_dir,f))
+  })
+```
+
+## Setup
+
+Merge the cell-type-specific data frame and get the full enhancers data.
+
+```{r}
+edata <- Reduce(f = rbind, x = edata_ls)
+rm(edata_ls)
+gc()
+table(edata$CellType)
+```
+
+Let's create a region id for downstream identification of unique regions.
+
+```{r}
+edata <- edata %>% mutate(region_id_raw_hg19 = paste0(chr,":",start,"-",end))
+```
+
+### Save merged raw_enhancers
+
+```{r}
+saveRDS(object = edata, file = paste0(out_dir,"01_raw_enhancers_merged_",date,".rds"))
+```
+
+## Bed file
+
+Create bed data frame
+
+```{r}
+bed <- edata %>% select(chr, start, end, region_id_raw_hg19)
+```
+
+### Filtering duplicated regions.
+
+We just need the unique identifiers. We don't care about the target gene or the cell type information, we just want the chromosome, start, and end coordinates. 
+
+How many unique regions do we have?
+```{r}
+length(unique(bed$region_id_raw_hg19))
+```
+
+Let's remove the duplicated regions.
+
+```{r}
+rmv <- which(duplicated(x = bed$region_id_raw_hg19))
+bed <- bed[-rmv,]
+# short test.
+cat("Do we have the same number of unique regions and number of rows in the filtered bed data frame? \n",
+    length(unique(bed$region_id_raw_hg19)) == nrow(bed))
+rm(rmv)
+```
+
+## Save the bed file 
+
+Save the bed file for analysis in the ENSEMBL webtool.
+Looks like in ENSEMBL we can't transform big file like our bed, then, let's divide it into  parts of 500,000 regions.
+
+```{r}
+#prepare the bins
+bins = seq(from = 0, to = nrow(bed), by = 5e5)
+bins <- c(bins, nrow(bed))
+bins
+```
+
+```{r}
+#save the bed files
+lapply(X = seq_along(bins[-1]), FUN = function(i){
+  write.table(x = bed[(bins[i]+1):bins[i+1], ],
+              file = paste0(out_dir,"/bed_hg19/hg19_",i,"_",date,".bed"),
+              quote = FALSE, row.names = FALSE, col.names = FALSE, sep = "\t")
+})
+rm(bins, bed)
+```
+
+PERFORM LIFTING FROM HG19 TO HG38 USING THE ENSEMBL WEBTOOL
+
+## Setup Regions hg38
+
+### Load results ENSEMBLE webtool 
+
+```{r}
+#get files names
+files <- list.files(path = paste0(out_dir,"/bed_hg38/"))
+hg38_ls <- lapply(X = files, FUN = function(f){
+  hg38_bed <- read.table(file = paste0(out_dir,"/bed_hg38/",f),
+                   header = FALSE,
+                   sep = "\t")
+  hg38_bed <- as.data.frame(hg38_bed)
+  colnames(hg38_bed) <- c("chr", "start", "end", "region_id")
+  return(hg38_bed)
+})
+```
+
+merged data frames in list
+
+```{r}
+regions_hg38 <- Reduce(f = rbind, x = hg38_ls)
+rm(hg38_ls)
+gc()
+```
+
+Let's verify that all the ids were preserved. 
+
+```{r}
+cat("All hg38 regions in hg19?: \n")
+sum(regions_hg38$region_id %in% edata$region_id_raw_hg19) == nrow(regions_hg38)
+cat("All hg19 regions in hg38?: \n")
+sum(edata$region_id_raw_hg19 %in% regions_hg38$region_id) == nrow(edata)
+```
+
+We have some missing regions in the lift over. 
+
+```{r}
+cat("Number of lost regions: \n")
+length(which(!unique(edata$region_id_raw_hg19) %in% unique(regions_hg38$region_id)))
+cat("Percentage of lost regions as compared with the original hg19 \n")
+paste0(round(100*length(which(!unique(edata$region_id_raw_hg19) %in% unique(regions_hg38$region_id)))/length(unique(edata$region_id_raw_hg19)), digits = 2)," %")
+```
+
+
+```{r}
+edata <- edata %>% filter(region_id_raw_hg19 %in% unique(regions_hg38$region_id))
+```
+
+Check again.
+
+```{r}
+cat("All hg19 regions in hg38?: \n")
+sum(edata$region_id_raw_hg19 %in% regions_hg38$region_id) == nrow(edata)
+cat("All hg38 regions in hg19?: \n")
+sum(regions_hg38$region_id %in% edata$region_id_raw_hg19) == nrow(regions_hg38)
+```
+
+
+Now we have matching ids in hg19 and hg38, but remember that we have more hg38 than hg19. 
+
+let's deal with them
+
+```{r}
+duplicated_ids <- unique(regions_hg38[which(duplicated(regions_hg38$region_id)),"region_id"])
+regions_hg38 %>% filter(region_id == duplicated_ids[3])
+```
+
+According to the documentation of CrossMap (http://crossmap.sourceforge.net/#how-crossmap-works), the tool used in ENSEMBL to transform the coordinates, and it divides the input coordinates and used a tree to map them. Sometimes the divided read are no longer contiguous, so we end up with different regions from the same initial one. We then need to merged these duplicated regions. 
+
+We can do this at the same time that we add the hg38 coordinate to each region
+
+Let's first save the old coordinates
+
+```{r}
+edata <- edata %>% mutate(start_hg19 = start, end_hg19 = end)
+#init new start and end
+edata <- edata %>% mutate(start = NA, end = NA)
+```
+
+Because only a few ids are duplicated, it's better to split the edata into dup and unique, this is to speed up the process.
+
+Let's split the edata into unique and duplicated 
+
+```{r}
+#get unique edata
+edata_unique <- edata %>% filter(!region_id_raw_hg19 %in% duplicated_ids)
+#get duplicated edata
+edata_dup <- edata %>% filter(region_id_raw_hg19 %in% duplicated_ids)
+```
+
+Short test
+```{r}
+cat("All edata in dup or unique edata frames?\n")
+nrow(edata_dup) + nrow(edata_unique) == nrow(edata)
+```
+
+Let's split the regions_hg38 into unique and duplicated
+
+```{r}
+#get unique hg38
+hg38_unique <- regions_hg38 %>% filter(!region_id %in% duplicated_ids)
+#get duplicated hg38 
+hg38_dup <- regions_hg38 %>% filter(region_id %in% duplicated_ids)
+```
+
+short test
+```{r}
+cat("All regions_hg38 in dup or unique hg38 data frames?\n")
+nrow(hg38_unique) + nrow(hg38_dup) == nrow(regions_hg38)
+```
+
+### Transfer hg38 coordinates of unique regions
+
+We need to sort the hg38 coordinates in the same order as the edata_unique 
+
+```{r}
+#add region_id as the rownames 
+rownames(hg38_unique) <- hg38_unique$region_id
+#sort hg38_unique as the edata_unique
+hg38_unique <- hg38_unique[edata_unique$region_id_raw_hg19,]
+```
+
+short test
+```{r}
+cat("Same number of elements in hg38_unique and edata_unique?\n")
+nrow(hg38_unique) == nrow(edata_unique)
+cat("Order of ids match between hg38_unique and edata_unique?\n")
+identical(hg38_unique$region_id, edata_unique$region_id_raw_hg19)
+```
+
+Transfer the new coordinates
+
+```{r}
+edata_unique$start <- hg38_unique$start
+edata_unique$end <- hg38_unique$end
+```
+
+short test
+```{r}
+any(is.na(edata_unique$start))
+any(is.na(edata_unique$end))
+```
+
+### Transfer hg38 coordinates of duplicated regions
+
+Let's work with the duplicated elements 
+
+```{r}
+#for each region id in the duplicated ids
+for(id in duplicated_ids){
+  #get the current hg38 data frame
+  current_df <- hg38_dup %>% filter(region_id == id)
+  #if we have more than one row (duplicated id)
+  if(nrow(current_df) > 1){
+    #get the start (min of starts)
+    start = min(current_df$start)
+    #the the end (max of end)
+    end = max(current_df$end)
+  }else{
+    warning("Uniqe rows detected in duplicated regions. Something is really wrong :(", call. = TRUE)
+    # start = current_df$start
+    # end = current_df$end
+  }
+  # assign the new coordinates
+  hg19_idx <- which(edata_dup$region_id_raw_hg19 == id)
+  edata_dup[hg19_idx,"start"] <- start
+  edata_dup[hg19_idx,"end"] <- end
+}
+```
+
+short test
+```{r}
+any(is.na(edata_dup$start))
+any(is.na(edata_dup$end))
+```
+
+Nice. Now we can merge the two data frames
+
+```{r}
+edata_hg38 <- rbind(edata_unique, edata_dup)
+```
+
+Short test
+
+```{r}
+cat("Same number of rows as original edata \n")
+nrow(edata_hg38) == nrow(edata)
+cat("Any NA in start or end:\n")
+any(is.na(edata_hg38$start)) | any(is.na(edata_hg38$end))
+```
+
+## Save results
+
+```{r}
+saveRDS(object = edata_hg38, file = paste0(out_dir, "02_raw_enhancers_hg38_",date,".rds"))
+```
+

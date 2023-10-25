@@ -1,0 +1,70 @@
+---
+title: "Filter ABC cell types"
+author: "Martin Loza"
+data: "2022/11/14"
+---
+
+In a previous notebook named "04_1_Filter_ABC_celltypes" I filtered cancer and treated cell types/tissues from the original ABC database.
+
+In this notebook I aim to filter cancer and treated cells from the enhancers data frame.
+
+NOTE. 
+- The regions were already filtered by ABC.score >= 0.15.
+- Regions and target's tss were lifted up to hg38. 
+- Target genes were annotated
+- Regions targeting genes not found in ENSEMBLE annotations were filtered.
+
+## Init
+
+```{r setup}
+library(dplyr)
+library(here)
+
+## Global variables
+date = "221114"
+#Set the files' directory (Data's folder by cell type)
+in_dir <- "Data/"
+```
+
+## Load data
+
+Load filtered cell types meta-data
+```{r}
+ct_md <- readRDS(file = paste0(in_dir, "/selected_ABC_ct_221114.rds"))
+head(ct_md)
+```
+
+Load the enhancers data 
+
+```{r}
+edata <- readRDS(file = paste0(in_dir,"/raw_enhancers/merged/03_raw_enhancers_hg38_gene_annotated_221114.rds"))
+```
+
+## Filter cancer and treated cells's regions
+
+```{r}
+#save initial number of regions
+initial_n_regions <- nrow(edata)
+#filter cancer and treated cell types
+edata <- edata %>% filter(CellType %in% ct_md$ABC_celltype_id)
+```
+
+```{r}
+cat("Initial number of enhances:\n")
+initial_n_regions
+cat("Number of enhancers after filtering cancer and treated cell types:\n")
+nrow(edata)
+cat("Percentage of filtered regions from the original data sets:\n")
+cat(100-100*round(nrow(edata)/initial_n_regions, digits = 6)," %" )
+```
+We filtered around 45% of the cell types... this is expected as we filtered 60 cell types from 131 original ones.
+
+## Save filtered regions
+
+```{r}
+saveRDS(object = edata, 
+        file = paste0(in_dir,"/raw_enhancers/merged/04_raw_enhancers_hg38_gene_annotated_cts_filtered_",date,".rds"))
+```
+
+
+
