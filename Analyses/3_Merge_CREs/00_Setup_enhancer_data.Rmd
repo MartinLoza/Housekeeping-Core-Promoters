@@ -1,0 +1,77 @@
+---
+title: "Setup enhancers data before the overlapping process"
+author: "Martin loza"
+date: "2022/11/26"
+---
+
+
+
+In this notebook I will setup the data to merge.
+
+```{r setup}
+library(here)
+library(dplyr)
+
+## Global variables
+date = "221126"
+seed = 777
+in_dir = "Data/raw_enhancers/merged/"
+out_dir = "Data/raw_enhancers/merged/"
+
+## Global functions
+source(here("Analysis/Functions.R"))
+```
+
+## Load data
+
+Load raw enhancers data 
+
+```{r}
+raw <- readRDS(file = paste0(in_dir, "/06_raw_selected_annotated_closest_gene_221121.rds"))
+```
+
+## Check general features of enhancers
+
+Number of cell types 
+```{r}
+length(unique(raw$CellType))
+```
+Is the ABS scores already fitered?
+```{r}
+summary(raw$ABC.Score)
+```
+
+YES! the minimum ABS score is 0.015!
+
+## Organize the columns. Get simple version
+
+```{r}
+colnames(raw)
+```
+
+
+```{r}
+sel_cols <- c("chr", "start", "end", "length", "center", "TargetGene", "tss", 
+              "distance", "CellType", "ABC.Score", "region_id")
+raw_simple <- raw[,sel_cols]
+```
+
+### save datasets
+
+```{r}
+saveRDS(object = raw, file = paste0(out_dir, "/hg38_annotated_",date,".rds"))
+saveRDS(object = raw_simple, file = paste0(out_dir, "/hg38_annotated_simple_",date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
