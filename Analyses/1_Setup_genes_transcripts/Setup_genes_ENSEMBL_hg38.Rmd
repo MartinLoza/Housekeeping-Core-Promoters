@@ -1,0 +1,147 @@
+---
+title: "Setup hg38 genes from ensembl"
+author: "Martin Loza"
+date: "2022/07/14"
+---
+
+On this workflow I setup the genes annotation from ENSEMBL. 
+The resulting data frame can be found in the figshare folder of our publication.
+
+```{r setup}
+library(dplyr)
+library(stringr)
+library(here)
+```
+
+## Load data
+
+Load the ENSEMBL annotations
+
+```{r}
+#change/add your Data directory
+data <- read.table(file = "Data/Homo_sapiens.GRCh38.107.chr.gtf", sep = "\t", header = FALSE)
+data <- as.data.frame(data)
+```
+
+## Setup columns
+
+From ensembl information
+* First column is the chromosome
+* Second column is the source
+* Third column is the feature (gene, variation, etc.)
+* Forth column is the start
+* Fifth column is the end
+* Sixth column is a score value
+* Seventh column is the strand
+* Eigth column is the Frame (I don't know what do they refer by frame)
+* Nineth column is the attribute (some extra infor separated by semicolon)
+
+For now, let's rename the columns
+
+```{r}
+colnames(data) <- c("chr", "source", "feature", "start", "end", "score", "strand", "frame", "attributes")
+```
+
+From test 3 and 4, the `score` and `frame` columns looks like not necessary for our studies. Then, let's remove them from now
+
+```{r}
+rmv_idx <- which(colnames(data) %in% c("score", "frame"))
+data <- data[,-rmv_idx]
+```
+
+Let's keep for now, only genes
+
+```{r}
+data <- data %>% filter(feature == "gene")
+table(data$feature)
+```
+
+Because we know they are only gene, we can remove this column
+```{r}
+rmv_idx <- which(colnames(data) == "feature")
+data <- data[,-rmv_idx]
+```
+
+## Analyse attributes
+
+Let's expand the attributes
+
+```{r}
+strsplit(x = data$attributes[1], split = ";")
+```
+We can observe that there are 4 extra information for every gene "gene_id", "gene_version", "gene_name", "gene_source", and "gene_biotype". Let's try to retrieve this information.
+
+```{r}
+gene_info <- unlist(strsplit(x = data$attributes[1], split = "; "))
+strsplit(gene_info[1], split = " ")
+
+data$attributes[1] %>% strsplit(split = "; ") %>% unlist() %>% strsplit(split = " ")
+```
+
+```{r}
+#create columns 
+data <- data %>% mutate("gene_id" = NA, "gene_version" = NA, "gene_name" = NA, "gene_source" = NA)
+#for each row
+for(r in 1:nrow(data)){
+current_attributes = data$attributes[r] %>% strsplit(split = "; ") %>% unlist() %>% strsplit(split = " ")
+  for(a in 1:length(current_attributes)){
+    tmp_attributes <- unlist(current_attributes[a])
+    data[r,tmp_attributes[1]] <- tmp_attributes[2]
+  }
+}
+```
+
+let's remove unnecesary characters
+```{r}
+data$gene_biotype <- gsub(x = data$gene_biotype, pattern = ";", replacement = "")
+# data %>% filter(gene_biotype == "protein_coding") %>% group_by(chr) %>% count
+# unique(data$gene_biotype)
+```
+
+For now, let's remove the "version" of the gene, and the original "source" (is duplicated in "gene_source") and the attributes. 
+
+```{r}
+rmv_idx <- which(colnames(data) %in% c("gene_source", "source", "attributes"))
+data <- data[,-rmv_idx]
+```
+
+## Save data
+
+```{r}
+saveRDS(object = data, file = "Data/genes_ENSEMBL_hg38.rds")
+```
+
+## Tests.
+
+### Test 1. 
+
+What's in V1, V3, and V7.
+
+Looks like V1 contains chromosome information, V3 contains the element information, and V7 contains the strand information.
+
+```{r}
+table(data$V1)
+table(data$V3)
+table(data$V7)
+```
+
+### Test 2. 
+
+```{r}
+t <- data %>% filter(V3 == "gene")
+t %>% group_by(V1) %>% count()
+```
+
+### Test 3. scores?
+Looks like there is only dots. We can remove it
+```{r}
+table(data$score)
+```
+
+### Test 4. Frame?
+
+I don't know. For now, let's remove it.
+
+```{r}
+table(data$frame)
+```
