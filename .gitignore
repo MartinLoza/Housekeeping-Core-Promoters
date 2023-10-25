@@ -1,0 +1,110 @@
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+
+# User-specific files
+.Ruserdata
+
+# Example code in package build process
+*-Ex.R
+
+# Output files from R CMD build
+/*.tar.gz
+
+# Output files from R CMD check
+/*.Rcheck/
+
+# RStudio files
+.Rproj.user/
+
+# produced vignettes
+vignettes/*.html
+vignettes/*.pdf
+
+# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
+.httr-oauth
+
+# knitr and R markdown default cache directories
+*_cache/
+/cache/
+
+# Temporary files created by R markdown
+*.utf8.md
+*.knit.md
+
+# R Environment Variables
+.Renviron
+
+# Project Data files 
+Data
+
+# Html files
+*.html
+
+# Image files
+*.jpeg
+*.png
+
+# RDS objects
+*.Rds
+*.rds
+*.RDS
+
+# Bed files
+*.bed
+
+# txt files
+*.txt
+
+# tsv and csv files
+*.tsv
+*.csv
+
+# excel files
+*.xls
+
+# gif files (Genome files)
+*.gtf
+
+# csv files
+*.csv
+
+# fasta files
+*.fa
+*.fai
+
+# RepeatMasker output files
+*.fa.cat.gz
+*.fa.masked
+*.fa.out
+*.fa.tbl
+*.fa.cat
+
+# pdf 
+*.pdf
+
+# svg files
+*.svg
+
+#bigwig files
+*.bg
+*.bigwig
+
+# gz files
+*.gz
+
+# gz tbi files
+*.gz.tbi
+
+# illustrator files
+*.ai
+
+# power point
+*.pptx
+
+
+
+
