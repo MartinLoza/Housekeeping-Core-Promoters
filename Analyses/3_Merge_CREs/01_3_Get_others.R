@@ -46,6 +46,7 @@ print("LOOP")
 #   get the strict overlap, select the core enhancers for the max number of cell types,
 #   and filter overlapping regions from the "raw_filtered" dataset.
 
+#loop for data of less than 90% of cell types
 for(n in round(x = 50*0.9, digits = 0):1){
   
   print("Iteration: ")

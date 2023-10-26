@@ -1,0 +1,276 @@
+---
+title: "Get closest gene for each of the merged regions"
+author: "Martin loza"
+date: "2022/11/30"
+---
+
+In this notebook I aim to find the closest ENSEMBL transcript for each merged region.
+
+This closest gene annotations will help us to further annotate the regions.
+
+NOTE. The regions were already:
+
+- Filtered mismatched n_celltypes regions, e.g. n_celltypes != test_n_celltypes
+- Short regions were filtered, thr = 50 bps
+- Gene bio_types were annotated
+
+```{r setup}
+library(here)
+library(dplyr)
+
+## Global variables
+date = "221130"
+seed = 777
+in_dir <- "Data/"
+out_dir = in_dir
+
+## Global functions
+source("Analysis/Functions.R")
+
+## Local functions 
+
+#Test closest gene by chromosome. Check if there are no crosses by chromosomes
+TestClosestGene <- function(regions_df = NULL, genes_df = NULL){
+  #get current chromosome
+  ch <- as.character(unique(regions_df$chr))
+  #get genes in the chromosome
+  genes_chr <- genes_df %>% filter(chr == ch)
+  ##TEST. ALL GENES IN THE SAME CHROMOSOME
+  t1 <- sum(regions_df$closest_gene %in% genes_chr$gene_name) == nrow(regions_df)
+  ##TEST. No genes from other chromosomes
+  other_chr <- genes_df %>% filter(chr != ch)
+  t2 <- sum(regions_df$closest_gene %in% other_chr$gene_name) == 0
+  
+  r <- (paste0(ch, ": ", if_else(condition = sum(t1,t2)==2, true = "PASSED", false = "NOT-PASSED")))
+  return(r)
+}
+```
+
+## Load data
+
+Load raw enhancers data 
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/merged/merged_expanded_biotype_annotated_221130.rds"))
+```
+
+Load transcripts universe
+
+```{r}
+transcripts <- readRDS(file = paste0(in_dir,"hg38/hg38_transcripts_universe_221121.rds"))
+```
+
+## Preliminary analysis
+
+short test
+```{r}
+any(duplicated(transcripts$gene_name))
+```
+
+We have duplicated gene names because there could be more than one transcript for each gene.
+
+```{r}
+#get genes in the selected data
+regions_genes <- regions %>% filter(!duplicated(gene)) %>% pull(gene)
+cat("Number of genes in the universe:\n")
+transcripts %>% filter(!duplicated(gene_name)) %>% nrow()
+cat("Number of genes in the selected regions:\n")
+length(regions_genes)
+```
+
+```{r}
+#get regions' pcg
+regions_pcg <- regions %>% filter(!duplicated(gene)) %>% filter(gene_biotype == "protein_coding") %>% pull(gene)
+#get universe pcg
+pcg <- transcripts %>% filter(!duplicated(gene_name))%>% filter(gene_biotype == "protein_coding") %>% pull(gene_name)
+cat("Number of missing PCG in the selected data:\n")
+sum(!pcg %in% regions_pcg)
+cat("Percentage missing:\n")
+paste0(100*round(sum(!pcg %in% regions_pcg)/length(pcg),digits = 5), "%")
+```
+
+The selected regions covers around the 97% of the pcg in the universe. 
+
+```{r}
+rm(pcg, regions_genes, regions_pcg)
+```
+
+## Get closest gene
+
+I would like to annotate the regions using the closest transcripts from the universe
+
+```{r}
+colnames(regions)
+```
+
+The next process might be highly memory consuming. Therefore it is important to reduce the number of columns. After we annotate the closest gene, we can incorporate the new columns to the original regions. 
+
+Also, in thise analysis we only care about the unique regions. We can get the closest gene of a reduced-unique regions dataset and later transfer the new anntations to the complete regions. 
+
+```{r}
+#get unique regions data
+u_regions <- regions %>% filter(!duplicated(region_id))
+#select columns in regions
+sel_columns <- c("chr", "start","end","center", "length", "region_id")
+u_regions <- u_regions %>% select(all_of(sel_columns))
+#init the closest gene as NA
+u_regions <- u_regions %>% mutate(closest_gene = NA)
+#init distance to closest gene
+u_regions <- u_regions %>% mutate(dist_to_closest_gene = 0)
+#init transcript_id to closest transcript
+u_regions <- u_regions %>% mutate(closest_transcript_id = NA)
+#init tss of closest transcript
+u_regions <- u_regions %>% mutate(closest_transcript_tss = 0)
+```
+
+For each unique id, we want to get the closest gene
+
+```{r}
+#the process need to be done by chromosome
+chromosomes <- levels(u_regions$chr)
+chr_edata_unique <- lapply(X = chromosomes, FUN = function(ch){
+  #get the regions in the current chromosome
+  chr_regions <- u_regions %>% filter(chr == ch)
+  #get the transcripts in the current chromosome
+  chr_transcripts <- transcripts %>% filter(chr == ch)
+  
+  #for each row in the chr_regions
+  for(r in seq_len(nrow(chr_regions))){
+    #get the center of current row
+    c_center = chr_regions[r,"center"]
+    #get the index of the closest gene
+    min_ct_idx <- which.min(x = abs(c_center - chr_transcripts$tss))
+    
+    #short test
+    if(length(min_ct_idx) >1){
+      warning("Error. More than one closest gene. Choosing the first one in the list",call. = TRUE)
+      min_ct_idx <- min_ct_idx[1]
+    }
+    
+    #get the closest transcript
+    closest_transcript = chr_transcripts[min_ct_idx,]
+    
+    #assign the closest gene
+    chr_regions[r,"closest_gene"] <- closest_transcript$gene_name
+    #assign distance the closest gene
+    chr_regions[r,"dist_to_closest_gene"] <- closest_transcript$tss - c_center
+    #assign the closest transcript id
+    chr_regions[r,"closest_transcript_id"] <- closest_transcript$transcript_id
+    #assign the closest transcript tss
+    chr_regions[r,"closest_transcript_tss"] <- closest_transcript$tss
+  }
+  return(chr_regions)
+})
+```
+
+```{r}
+sapply(X = chr_edata_unique, FUN = TestClosestGene, genes_df = transcripts)
+```
+
+For test, let's keep both objects of the unique regions
+
+```{r}
+edata_unique_annotated <- Reduce(f = rbind, x = chr_edata_unique)
+cat("All unique regions in the annotated regions ?\n")
+sum(edata_unique_annotated$region_id %in% u_regions$region_id) == nrow(u_regions)
+```
+
+Everything look OK, we can keep only the annotated regions and used them to annotate the complete regions
+
+```{r}
+rm(u_regions)
+```
+
+Let's use the regio_id as anchors to transfer the annotations
+
+```{r}
+#set the region_id as rownames to subset the data
+rownames(edata_unique_annotated) <- edata_unique_annotated$region_id
+#sort the edata_unique_annotated as the regions order
+edata_unique_annotated <- edata_unique_annotated[regions$region_id,]
+```
+
+Short test
+
+Same region_ids
+```{r}
+identical(regions$region_id, edata_unique_annotated$region_id)
+```
+
+Let's transfer the annotations
+
+```{r}
+regions <- regions %>% mutate(closest_gene = edata_unique_annotated$closest_gene,
+                          dist_to_closest_gene = edata_unique_annotated$dist_to_closest_gene,
+                          closest_gene_id = edata_unique_annotated$closest_transcript_id,
+                          closest_gene_tss = edata_unique_annotated$closest_transcript_tss)
+```
+
+Short test
+
+Closest_gene_distance and distance to target gene match?
+```{r}
+t <- regions %>% filter(closest_gene == gene) %>% select(distance, dist_to_closest_gene)
+t <- t %>% mutate(dist_to_closest_gene = abs(dist_to_closest_gene))
+#the distances match?
+identical(t %>% filter(dist_to_closest_gene == distance), t)
+```
+No, they don't match, but it's OK because they distance were calculated with the ENSEMBL genes TSS which might be different from the ENSEMBLE transcript TSS.
+
+## Save data 
+
+```{r}
+saveRDS(object = regions, file = paste0(out_dir,"/merged/merged_nearest_gene_", date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

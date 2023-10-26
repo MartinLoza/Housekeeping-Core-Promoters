@@ -1,0 +1,116 @@
+---
+title: "Merged results"
+author: "Martin loza"
+date: "2022/11/30"
+---
+
+On this notebook, I want to merge the results of merging overlapping CTSR, HKR, and others.
+
+```{r setup}
+library(dplyr)
+
+## Global variables
+date = "221130"
+seed = 777
+in_dir =  "Data/merged"
+out_dir = in_dir
+```
+
+## Load enhancers data 
+
+Load merged CTSR, HKR, and others
+
+```{r}
+#load cell type-specific CREs
+ctsr <- readRDS(file = paste0(in_dir, "/ctse_expanded_221126.rds"))
+#load HK-CREs
+hkr <- readRDS(file = paste0(in_dir, "/hke_expanded_221127.rds"))
+#load others (merged CREs from 44 to 2 cell-types)
+others <- readRDS(file = paste0(in_dir, "/me_expanded_2_221127.rds"))
+```
+
+Load raw data after merging overlapping regions
+
+```{r}
+raw_filtered <- readRDS(file = paste0(in_dir, "/raw_filtered_2_221127.rds"))
+```
+
+## Analysis of raw_filtered
+
+We expect no regions after the iterative process
+
+```{r}
+cat("Number of raw regions after the iterative process: \n")
+nrow(raw_filtered)
+```
+
+Nice, we don't have any raw regions. We confirmed that the iterative process was run succesfully. We can delete this data frame
+
+```{r}
+rm(raw_filtered)
+```
+
+## Set up merged regions
+
+Let's confirmed that we have the same number of columns
+
+```{r}
+ncol(ctsr) == ncol(hkr)
+ncol(hkr) == ncol(others)
+```
+
+The CTSR have a unique identifier as raw_CTSE. Let'confirm that only these regions were assigned with this id
+
+```{r}
+table(ctsr$raw_CTSE)
+table(hkr$raw_CTSE)
+table(others$raw_CTSE)
+```
+
+The others regions haven't been assigned with this id. Let's assign it
+
+```{r}
+others$raw_CTSE <- FALSE
+#also assign to hkr just go be sure
+hkr$raw_CTSE <- FALSE
+```
+
+Let's check the names of the columns
+
+```{r}
+sum(colnames(ctsr) == colnames(hkr)) == ncol(ctsr)
+sum(colnames(hkr) == colnames(others)) == ncol(hkr)
+```
+
+Nice, everything looks good.
+
+## Merge CTSR, HKR, and others
+
+```{r}
+regions <- Reduce(f = rbind, x = list(ctsr, hkr, others))
+table(regions$test_n_celltypes)
+```
+
+```{r}
+colnames(regions)
+```
+
+## Save merged regions
+
+```{r}
+saveRDS(object = regions, file = paste0(out_dir, "/regions_expanded_merged_", date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

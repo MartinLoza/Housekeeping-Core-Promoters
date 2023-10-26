@@ -1,0 +1,113 @@
+---
+title: "Annotate target genes of the merged regions"
+author: "Martin loza"
+date: "2022/11/30"
+---
+
+In this notebook I aim to find annotate the target genes of the merged regions.
+
+```{r setup}
+library(here)
+library(dplyr)
+
+## Global variables
+date = "221130"
+seed = 777
+in_dir <- "Data/"
+out_dir = in_dir
+
+## Global functions
+source("Analysis/Functions.R")
+
+## Local functions 
+#Transfer metadata function
+TransferMD <- function(target_df = NULL, from_df = NULL, column = NULL, target_anchors = NULL, from_anchors = NULL){
+  #set the anchor iformation as rownames
+  rownames(from_df) <- from_df[[from_anchors]]
+  #fit the target data frame 
+  from_df <- from_df[target_df[[target_anchors]],]
+  #short tests
+  if(any(is.na(from_df[[from_anchors]]))){
+    stop("NA founds. Verify the anchors selected.", call. = TRUE)
+  }
+  if(identical(target_df[[target_anchors]], from_df[[from_anchors]])){
+    target_df[[column]] <- from_df[[column]]
+  }else{
+    stop("Anchors not identical. Verify the anchors selected.", call. = TRUE)
+  }
+  #returen the data frame with the new meta data
+  return(target_df)
+}
+
+```
+
+## Load data
+
+Load raw enhancers data 
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/merged/merged_expanded_filtered_regions_221130.rds"))
+```
+
+Load genes universe
+
+```{r}
+genes <- readRDS(file = paste0(in_dir,"/hg38/hg38_genes_universe_221121.rds"))
+```
+
+## Preliminary analysis
+
+short test
+```{r}
+any(duplicated(genes$gene_name))
+```
+
+No duplicated names. 
+
+```{r}
+#get genes in the selected data
+regions_genes <- regions %>% filter(!duplicated(gene)) %>% pull(gene)
+cat("Number of genes in the universe:\n")
+genes %>% filter(!duplicated(gene_name)) %>% nrow()
+cat("Number of genes in the selected regions:\n")
+length(regions_genes)
+```
+
+## Annotate genes
+
+Let's get the genes contained in the regions' targets
+
+```{r}
+genes_targets <- genes %>% filter(gene_name %in% regions_genes) 
+```
+
+Let's annotate the biotype of target genes
+I coded a function for this. 
+
+```{r}
+regions <- TransferMD(target_df = regions, from_df = genes_targets, column = "gene_biotype", target_anchors = "gene", from_anchors ="gene_name")
+```
+
+```{r}
+#get regions' pcg
+regions_pcg <- regions %>% filter(!duplicated(gene)) %>% filter(gene_biotype == "protein_coding") %>% pull(gene)
+#get universe pcg
+pcg <- genes %>% filter(gene_biotype == "protein_coding") %>% pull(gene_name)
+cat("Number of missing PCG in the selected data:\n")
+sum(!pcg %in% regions_pcg)
+cat("Percentage missing:\n")
+paste0(100*round(sum(!pcg %in% regions_pcg)/length(pcg),digits = 5), "%")
+```
+
+The selected regions covers around the 97% of the pcg in the universe. 
+
+```{r}
+rm(pcg, regions_genes, regions_pcg)
+```
+
+## Save data
+
+```{r}
+saveRDS(object = regions, file = paste0(out_dir,"/merged/merged_expanded_biotype_annotated_",date,".rds"))
+```
+

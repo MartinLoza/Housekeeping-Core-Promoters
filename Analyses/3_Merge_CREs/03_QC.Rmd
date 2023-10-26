@@ -1,0 +1,220 @@
+---
+title: "QC. Filter short regions"
+author: "Martin loza"
+date: "2022/11/30"
+---
+
+I hybrid-merged the enhancers and now I would like to filter short length regions.
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+
+## Global variables
+date = "221130"
+seed = 777
+in_dir = "Data/merged/"
+out_dir = in_dir
+
+# Global functions
+source("Analysis/Functions.R")
+```
+
+## Load merged enhancers data 
+
+```{r}
+regions <- readRDS(file = paste0(in_dir,"/regions_expanded_merged_221130.rds"))
+```
+
+Check enhancers
+
+```{r}
+CheckEnhancers(enhancers =  regions)
+```
+
+## Set up
+
+This objects contains the expanded regions, e.g. one row for each enhancer-gene interaction. Then, we need to get the unique regions 
+
+```{r}
+u_regions <- regions %>% filter(!duplicated(region_id))
+table(u_regions$test_n_celltypes)
+```
+
+## QC
+
+### Regions with number of cell types mismatch
+
+During the merging process there were some regions with a mismatch on the number of cell types. This could be a mismatch between the used packages. For example, we use the bedr to get the core regions, and then transfer the meta data using the GenomicRanges package.
+ 
+Let's get the difference in number of cell types
+```{r}
+u_regions <- u_regions %>% mutate(diff_n_celltypes = test_n_celltypes - n_celltypes) 
+```
+
+```{r}
+cat("Number of cells' mismatch: \n")
+u_regions %>% filter(n_celltypes < 50) %>% pull(diff_n_celltypes) %>% table()
+```
+
+Most of the mismatch regions has a mismatch of one cell types. 
+Let's see their distribution by number of cell types
+
+```{r}
+u_regions %>% filter(diff_n_celltypes > 0) %>% ggplot(mapping = aes(x = n_celltypes)) + geom_histogram(stat = "count") + theme_bw()
+```
+
+Looks like the less number of cell types the more chance to get a mismatch, I think this is kind of expected as regions with less mismatch would be noisier.
+
+If we filtered these regions, how many regions would we filter?
+
+```{r}
+cat("Percentage of unique regions with mistmatch:\n")
+paste0(100*round(sum(u_regions$diff_n_celltypes > 0)/nrow(u_regions), digits = 5), "%")
+```
+
+These regions only represents less than 0.5% of the total regions, and they areless likely to be in HKR. Then, I think we can just filter them to have a stable set of enhancers.
+
+```{r}
+#get the ids of mismatched regions
+rmv_id <- u_regions %>% filter(diff_n_celltypes > 0) %>% pull(region_id) 
+#filter mismtached regions in the expanded data
+regions_filtered <- regions %>% filter(!region_id %in% rmv_id)
+#short test
+sum(regions_filtered$region_id %in% rmv_id) == 0
+```
+
+### Filter short regions
+
+Let's update the u_regions 
+
+```{r}
+u_regions <- regions_filtered %>% filter(!duplicated(region_id))
+table(u_regions$n_celltypes)
+```
+
+Short regions can be created during the merging process. I would like to filter these regions using a threshold.
+
+Let's check the summary of length first
+
+```{r}
+summary(u_regions$length)
+```
+
+There are regions with 0bps length. 
+
+Let's check the histogram of the length
+
+```{r}
+u_regions %>% ggplot(mapping = aes(x = length)) + geom_histogram(bins = 80) + scale_x_continuous(trans = "log", breaks = c(50,300,500, 1e3, 1e4))
+```
+
+Most of the regions are larger than 390 bps. 
+
+Let's check the length distribution by number of cell types
+
+```{r fig.width=4}
+u_regions %>% mutate(n_celltypes = factor(u_regions$n_celltypes)) %>% filter(length <= 2500 ) %>% 
+  group_by(n_celltypes) %>% ggplot(mapping = aes(x = n_celltypes, y = length)) +
+  geom_boxplot(outlier.size = 0) + geom_point(size = 0.01, alpha = 0.2) + theme_bw() + scale_y_continuous(trans = "sqrt", breaks = c(50,100, 200, 300,500, 1000, 2000))
+```
+
+Let's check the percentage of enhancer with different filter thresholds.
+
+```{r}
+for(short in c(0,50,100,200)){
+  info = paste(paste0("\nNumber of regions: ",nrow(u_regions)), 
+                   paste0("Number of short regions: ",sum(u_regions$length <= short)),
+                   paste0("Percentage of short regions: ",
+                          round(100*sum(u_regions$length <= short)/nrow(u_regions), digits = 2), "%"), 
+                   sep = "\n")
+  
+  cat("\n\nFiltering ", short, "bps short regions. " , info)
+}
+rm(short, info)
+```
+
+If we filter regions shorter than 50bps, we will lose 8887 regions which represents the 3.8%. Also this filter don't interrupt the main distribution of the length by number of cell types. I think this is acceptable
+
+Let's check the distribution by number of cell types if we used 50 bps as the minimum length 
+
+After filtering
+
+```{r fig.width=4}
+u_regions %>% mutate(n_celltypes = factor(u_regions$n_celltypes)) %>% filter(length <= 2500 & length >=50 ) %>% 
+  group_by(n_celltypes) %>% ggplot(mapping = aes(x = n_celltypes, y = length)) +
+  geom_boxplot(outlier.size = 0) + geom_point(size = 0.01, alpha = 0.2) + theme_bw() + scale_y_continuous(trans = "sqrt", breaks = c(50,100, 200, 300,500, 1000, 2000))
+```
+
+It looks nice. The statistics improved too.
+
+Let's use this filter 
+
+```{r}
+regions_filtered <- regions_filtered %>% filter(length >= 50) 
+```
+
+Let's update the unique regions 
+
+```{r}
+u_regions <- regions_filtered %>% filter(!duplicated(region_id))
+summary(u_regions$length)
+```
+
+
+This is the final distribution of enhancers using this filters
+
+```{r}
+subtitle = paste(paste0("Number of enhancers: ", nrow(u_regions)), 
+                 paste0("Number of CTSR: ", u_regions %>% filter(n_celltypes == 1) %>% count() %>% pull(n) ),
+                 paste0("Number of HKR: ", u_regions %>% filter(n_celltypes == 50) %>% count() %>% pull(n) ),
+                 sep = "\n")
+u_regions %>% filter(length<3500) %>% ggplot(mapping = aes(x = length)) + geom_histogram(bins = 200) + scale_x_continuous(breaks = c(100,500,750, 1000, 1500, 2500)) + theme_bw() + ggtitle(label = "", subtitle = subtitle)
+```
+
+```{r, fig.width=4}
+u_regions %>% ggplot(mapping = aes(x = test_n_celltypes)) + geom_histogram(stat = "count") + theme_bw() + ggtitle(label = "", subtitle = subtitle)
+```
+
+
+```{r}
+min(u_regions$length)
+max(u_regions$length)
+```
+
+## CTSE vs HKE. Distance to target analysis.
+
+```{r fig.width=3 }
+regions_filtered %>% 
+  filter(n_celltypes == 1 | n_celltypes == 50) %>% mutate(n_celltypes = factor(n_celltypes)) %>%
+  ggplot(mapping = aes(x = distance, color = n_celltypes, fill = n_celltypes)) +
+  geom_histogram(bins = 100, alpha = 0.5, position = "dodge") + theme_bw() +scale_x_continuous( trans = "log",breaks = c(1e3,1e4,1e5,1e6,5e6)) + ggtitle("Distance to target genes")
+```
+
+```{r}
+cat("CTSE - distance: \n")
+u_regions %>% filter(n_celltypes ==1) %>% pull(distance) %>% summary()
+cat("HKE - distance: \n")
+u_regions %>% filter(n_celltypes == 50) %>% pull(distance) %>% summary()
+```
+
+## CTSE vs HKE. Number of target genes analysis.
+
+```{r fig.width=3 }
+u_regions %>% 
+  filter(n_celltypes == 1 | n_celltypes == 50) %>% mutate(n_celltypes = factor(n_celltypes)) %>%
+  ggplot(mapping = aes(x = n_genes, color = n_celltypes, fill = n_celltypes)) +
+  geom_histogram(bins = 100, alpha = 0.5, position = "dodge") + 
+  theme_bw() +scale_y_continuous( trans = "sqrt", breaks = c(0, 1e2,1e3,1e4,1e5,1e6,5e6)) + ggtitle("Number of target genes")
+```
+
+```{r}
+cat("CTSE - number of target genes: \n")
+u_regions %>% filter(n_celltypes ==1) %>% pull(n_genes) %>% summary()
+cat("HKE - number of target genes: \n")
+u_regions %>% filter(n_celltypes == 50) %>% pull(n_genes) %>% summary()
+```
+
+```{r}
+saveRDS(object = regions_filtered, paste0(out_dir, "/merged_expanded_filtered_regions_", date, ".rds"))
+```
