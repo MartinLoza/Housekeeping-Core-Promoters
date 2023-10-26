@@ -1,0 +1,236 @@
+---
+title: "Merge annotations"
+author: "Martin loza"
+date: "2023/02/15"
+---
+
+In previous notebooks I annotated the histones modification and nucleotide content of ABC + NS regions. In this workflow I would like to merge the annotations, including the one from the ABC merging procedure. 
+
+```{r setup}
+library(dplyr)
+library(GenomicRanges)
+library(stringr)
+library(ggplot2)
+
+## Global variables
+date = "230215"
+seed = 777
+in_dir = "Data/annotated/"
+out_dir = in_dir
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+```
+
+## Load data 
+
+Load ABC + NS regions
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/merged_u_regions_NS_230210.rds"))
+
+#short number of regions  
+test <- table(regions$type) == c(225140,10000)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS + ABC regions OK")
+}
+rm(test)
+```
+
+Load histones' annotations
+
+```{r}
+histone_ann <- readRDS(file = paste0(out_dir, "/histones_annotated_230215.rds"))
+#short test
+cat("Same number of rows OK: \n")
+nrow(histone_ann) == nrow(regions)
+cat("Same region_ids OK: \n")
+sum(histone_ann$region_id %in% regions$region_id) == nrow(histone_ann)
+```
+
+Load nearest tss' annotations
+
+```{r}
+tss_ann <- readRDS(file = paste0(out_dir, "/nearest_tss_annotated_230210.rds"))
+#short test
+cat("Same number of rows OK: \n")
+nrow(tss_ann) == nrow(regions)
+cat("Same region_ids OK: \n")
+sum(tss_ann$region_id %in% regions$region_id) == nrow(tss_ann)
+```
+
+Load ABC regions 
+
+```{r}
+abc_ann <- readRDS(file = "Data/merged/merged_nearest_gene_221130.rds")
+abc_ann <- GetUniqueRegions(abc_ann)
+#short test
+cat("Same number of rows OK: \n")
+nrow(abc_ann)+10000 == nrow(regions)
+cat("Same region_ids OK: \n")
+sum(abc_ann$region_id %in% regions$region_id) == nrow(abc_ann)
+```
+Final test
+
+```{r}
+#same number of elements
+nrow(tss_ann) == nrow(histone_ann)
+nrow(tss_ann) == (nrow(abc_ann) + 10000) #we have 10k NS
+```
+
+## Setup
+
+The only annotation that has a different number of elements is the abc_ann, which only included the annotation of the abc elements, e.g. doesn't include the NS
+
+Therefore, I would select the interesting annotations from the ABC enhancers.
+I will set the extra rows in the NS as "NS"
+
+```{r}
+# colnames(abc_ann)
+#I would like to conserve: regions_id, n_celltypes, test_n_celltypes, raw_CTSE
+sel_cols <- c("region_id", "n_celltypes", "test_n_celltypes", "raw_CTSE", "n_genes")
+abc_ann <- abc_ann %>% select(all_of(sel_cols))
+rm(sel_cols)
+colnames(abc_ann)
+```
+
+Now let's create the annotation for the remaining NS
+
+```{r}
+ns_ann <- as.data.frame(matrix(data = "NS", nrow = 10000, ncol = ncol(abc_ann)))
+colnames(ns_ann) <- colnames(abc_ann)
+#get NS region_id
+ids <- regions %>% filter(type == "NS") %>% pull(region_id)
+ns_ann <- ns_ann %>% mutate(region_id = ids)
+#merge the abc_ann + ns_ann
+abc_ann <- rbind(abc_ann, ns_ann)
+#short test
+cat("Same regions ids:\n")
+sum(abc_ann$region_id %in% regions$region_id) == nrow(abc_ann)
+rm(ids,ns_ann)
+```
+
+Now, let's use the region_ids as anchors to transfer the columns
+For this, I create a function to ease the transfer
+
+```{r}
+#transfer the histone annotations
+cols_idx <- which(!colnames(histone_ann) %in% colnames(regions))
+sel_cols <- colnames(histone_ann)[cols_idx]
+regions <- TransferColumns(reference = regions, query = histone_ann, 
+                           anchors = "region_id", cols_to_tranfer = sel_cols)
+rm(cols_idx, sel_cols)
+```
+
+```{r}
+#transfer the tss annotations
+cols_idx <- which(!colnames(tss_ann) %in% colnames(regions))
+sel_cols <- colnames(tss_ann)[cols_idx]
+regions <- TransferColumns(reference = regions, query = tss_ann, 
+                           anchors = "region_id", cols_to_tranfer = sel_cols)
+rm(cols_idx, sel_cols)
+```
+
+```{r}
+#transfer the abc annotations
+cols_idx <- which(!colnames(abc_ann) %in% colnames(regions))
+sel_cols <- colnames(abc_ann)[cols_idx]
+regions <- TransferColumns(reference = regions, query = abc_ann, 
+                           anchors = "region_id", cols_to_tranfer = sel_cols)
+rm(cols_idx, sel_cols)
+```
+
+Final columns
+
+```{r}
+colnames(regions)
+```
+
+Yay!! let's save the annotated data
+
+```{r}
+saveRDS(object = regions, file = paste0(out_dir,"u_regions_NS_annotated_",date,".rds" ))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

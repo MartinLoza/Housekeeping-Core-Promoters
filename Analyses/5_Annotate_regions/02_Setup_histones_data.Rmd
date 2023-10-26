@@ -1,0 +1,261 @@
+---
+title: "Setup ENCODE histone data"
+author: "Martin loza"
+date: "2023/02/02"
+---
+
+I will normalize the data using the log1p + scaling. This to avoid the huge gap between 0 and non-zero annotated regions.
+
+To run this workflow you need to download the histone ChIP-seq data from ENCODE described in Supplementary Table 2.
+
+```{r setup}
+library(dplyr)
+library(GenomicRanges)
+library(stringr)
+library(ggplot2)
+
+## Global variables
+date = "230215"
+seed = 777
+#add the folder where you downloaded the ChIP-seq datasets.
+in_dir <- "Data/ENCODE_histones_CHIP/Histones_data/"
+out_dir = "Data/ENCODE_histones_CHIP/"
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+
+#Setup bed files. Select columns and name columns
+SetupBed <- function(bed = NULL){
+  #According with test 1. We need the columns 1,2,3,7,9 from the input file
+  sel_columns <- c(1,2,3,7,9)
+  bed <- bed[,sel_columns]
+  #name columns
+  colnames(bed) <- c("chr", "start", "end", "signalValue", "qValue")
+  return(bed)
+} 
+
+#Get list of bed data
+GetBedData <- function(md = NULL, histone = NULL, min_qval = 0.05, min_fc = 2){
+  #for each file index
+  bed_ls <- lapply(X = 1:nrow(md), FUN = function(f_idx){
+    #get the current file name and cell type
+    current_file <- md$File.accession[f_idx]
+    current_celltype <- md$Biosample.term.name[f_idx]
+    #load the bed files
+    bed <- read.table(file = paste0(in_dir, "/", histone, "/", current_file,".bed"), header = FALSE, sep = "\t")
+    bed <- as.data.frame(bed)
+    #setup the bed file
+    bed <- SetupBed(bed = bed)
+    #Filter regions by qValue and fold change
+    bed <- bed %>% filter(qValue >= -log10(min_qval) & signalValue >= min_fc)
+    #Filter unused chromosomes
+    sel_chromosomes <- paste0("chr", c(1:22,"X"))
+    bed <- bed %>% filter(chr %in% sel_chromosomes) %>% mutate(chr = factor(chr, levels = sel_chromosomes))
+    #add cell-type and file information
+    bed <- bed %>% mutate(celltype = current_celltype, file = current_file)
+    #
+    return(bed)
+  })
+  return(bed_ls)
+}
+
+NormalizeHistone <- function(.data = NULL){
+  .data <- .data %>%
+    mutate(log_normalized = log1p(signalValue)) %>%
+    mutate(normalized = scale(log_normalized, scale = TRUE, center = TRUE))
+  return(.data)
+} 
+```
+
+## Load data 
+
+We have collected data from the main histone marks: H3K27ac, H3K4me1, H3K4me3
+
+From each histone mark we collected data from different cell types. Let's load the data using the local functions
+
+```{r}
+histone_names <- list.dirs(path = in_dir, full.names = FALSE, recursive = FALSE)
+#for each histone in histone_names 
+histone_data <- lapply(X = histone_names, FUN = function(histone){
+  #Let's load the files meta data
+  md <- read.table(file = paste0(in_dir, "/", histone, "/metadata.tsv"),
+                   header = TRUE, sep = "\t")
+  #We have several information of the samples, but for now we will concentrate in the File.accession and the "Biosample.term.name", which is the cell type/tissue
+  md <- md %>% select(File.accession, Biosample.term.name)
+  #filter duplicated cell types
+  md <- md %>% filter(!duplicated(Biosample.term.name))
+  #Using the meta data, we can load and set up the histone bed files
+  bed_data <- GetBedData(md = md, histone = histone, min_qval = 0.05, min_fc = 2)
+  #Add Names
+  names(bed_data) <- md$Biosample.term.name
+  #return the merged data
+  return(bed_data)
+})
+names(histone_data) <- histone_names
+```
+
+```{r}
+cat("Number of cell types:\n ")
+sapply(X = names(histone_data), FUN = function(histone){
+  return(length(unique(names(histone_data[[histone]]))))
+})
+```
+
+## Normalization
+
+Normalize the data
+
+```{r}
+for(histone_n in histone_names){
+  histone <- histone_data[[histone_n]]
+  histone <- lapply(X = histone, FUN = NormalizeHistone)
+  histone_data[[histone_n]] <- histone
+}
+rm(histone, histone_n)
+```
+
+Merge the histone's data
+
+```{r}
+for(histone_n in histone_names){
+  histone <- histone_data[[histone_n]]
+  histone <- Reduce(f = rbind, x = histone)
+  histone_data[[histone_n]] <- histone
+}
+rm(histone, histone_n)
+```
+
+## Plot normalized data
+
+```{r fig.width=2.5}
+for(histone in histone_names){
+  tmp <- histone_data[[histone]]
+  p <- tmp %>% MyViolinPlot(x = "celltype", y = "normalized") + ggtitle(paste0(histone, ", log10 + scaling"))
+  print(p)
+}
+rm(p,tmp)
+```
+
+## Save the data
+
+```{r}
+saveRDS(object = histone_data, file = paste0(out_dir,"histone_data_normalized_",date,".rds"))
+```
+
+## TESTS
+
+
+### Test 2. Load the files using the meta data
+
+Let's load the files meta data
+```{r}
+histone = "H3K27ac"
+md <- read.table(file = paste0(in_dir, "/", histone, "/metadata.tsv"), header = TRUE, sep = "\t")
+```
+
+We have several information of the samples, but for now we will concentrate in the File.accession and the "Biosample.term.name", which is the cell type/tissue
+
+```{r}
+md <- md %>% select(File.accession, Biosample.term.name)
+#filter duplicated cell types
+md <- md %>% filter(!duplicated(Biosample.term.name))
+```
+
+Using the meta data, we can load and set up the histone bed files
+
+```{r}
+md <- md[1:5,]
+t <- GetBedData(md = md, histone = histone, min_qval = 0.05)
+```
+
+### Test 1. Loading the files
+
+```{r}
+bed <- read.table(file = paste0(in_dir, "/ENCODE_histones_CHIP/H3K27ac/ENCFF008PSH.bed"), header = FALSE, sep = "\t")
+```
+
+```{r}
+bed
+```
+
+According with the ENCODE description (https://genome.ucsc.edu/FAQ/FAQformat.html#format12)
+the columns of the bed file are :
+- chrom - Name of the chromosome (or contig, scaffold, etc.).
+- chromStart - The starting position of the feature in the chromosome or scaffold. The first base in a chromosome is numbered 0.
+- chromEnd - The ending position of the feature in the chromosome or scaffold. The chromEnd base is not included in the display of the feature. For example, the first 100 bases of a chromosome are defined as chromStart=0, chromEnd=100, and span the bases numbered 0-99.
+- name - Name given to a region (preferably unique). Use "." if no name is assigned.
+- score - Indicates how dark the peak will be displayed in the browser (0-1000). If all scores were "'0"' when the data were submitted to the DCC, the DCC assigned scores 1-1000 based on signal value. Ideally the average signalValue per base spread is between 100-1000.
+- strand - +/- to denote strand or orientation (whenever applicable). Use "." if no orientation is assigned.
+- signalValue - Measurement of overall (usually, average) enrichment for the region.
+- pValue - Measurement of statistical significance (-log10). Use -1 if no pValue is assigned.
+- qValue - Measurement of statistical significance using false discovery rate (-log10). Use -1 if no qValue is assigned.
+- peak - Point-source called for this peak; 0-based offset from chromStart. Use -1 if no point-source called.
+
+```{r}
+colnames(bed) <- c("chr", "start", "end", "name", "score", "strand", "signalValue", "pValue", "qValue", "peak")
+```
+
+```{r}
+cat("Strand:")
+table(bed$strand)
+cat("score:\n")
+summary(bed$score)
+cat("signalValue:\n")
+summary(bed$signalValue)
+cat("pValue:\n")
+summary(bed$pValue)
+cat("qValue:\n")
+summary(bed$qValue)
+cat("peak:\n")
+summary(bed$peak)
+```
+
+For now, let's just keep the chromosome, start, end, signalValue, and qValue information
+
+```{r}
+bed <-  bed %>% dplyr::select(chr, start, end, signalValue, qValue)
+```
+
+### Minimum fold change and qValue
+
+Minimum fold change and qValue
+```{r}
+qvalues <-  sapply(X = histone_data$H3K27ac, FUN = function(d){
+  d <- d %>% pull(qValue) %>% min()
+  d <- 10^-d
+  return(d)
+})
+cat("Number of qValues higher than the threshold: \n")
+sum(qvalues >= 0.05)
+rm(qvalues)
+```
+
+Good, no qValues higher than threshold.
+
+How about the fold changes
+
+```{r}
+fc <-  sapply(X = histone_data$H3K27ac, FUN = function(d){
+  d <- d %>% pull(signalValue) %>% min()
+  return(d)
+})
+cat("Number of FC lower than the threshold: \n")
+sum(fc < 2)
+rm(fc)
+```
+
+Looks good. Let's continuew
+
+
+
+
+
+
+
+
+
+
+

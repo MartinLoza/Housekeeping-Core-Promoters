@@ -1,0 +1,198 @@
+---
+title: "Annotate the distance to nearest TSS of ABC + NS regions."
+author: "Martin loza"
+date: "2023/02/10"
+---
+
+In previous analyses I defined negative samples with the next characteristics:
+
+- Length = 500 bp. This is because most of the ABC regions are this length
+- The center of the negative controls should be at leas 500 bp away from any ABC or SCREEN regulatory elements.
+- The center of the negative controls should be at least 750 bps from any ABC expanded (ABC +- 500 bps)
+
+On this notebook, I would like to annotate the distance to the nearest TSS of the negative samples + ABC regions.
+
+```{r setup}
+library(dplyr)
+
+## Global variables
+date = "230210"
+seed = 777
+
+in_dir = "Data/annotated/"
+out_dir <- in_dir
+
+## Global functions
+source("Analysis/Functions.R")
+
+#Local functions
+#Test nearest gene by chromosome. Check if there are no crosses by chromosomes
+TestNearestGene <- function(regions_df = NULL, genes_df = NULL){
+  #get current chromosome
+  ch <- as.character(unique(regions_df$chr))
+  #get genes in the chromosome
+  genes_chr <- genes_df %>% filter(chr == ch)
+  ##TEST. ALL GENES IN THE SAME CHROMOSOME
+  t1 <- sum(regions_df$nearest_gene %in% genes_chr$gene_name) == nrow(regions_df)
+  ##TEST. No genes from other chromosomes
+  other_chr <- genes_df %>% filter(chr != ch)
+  t2 <- sum(regions_df$nearest_gene %in% other_chr$gene_name) == 0
+  
+  r <- (paste0(ch, ": ", if_else(condition = sum(t1,t2)==2, true = "PASSED", false = "NOT-PASSED")))
+  return(r)
+}
+```
+
+## Load data 
+
+Load ABC+NS regions 
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/merged_u_regions_NS_230210.rds"))
+
+#short number of regions  
+test <- table(regions$type) == c(225140,10000)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS + ABC regions OK")
+}
+rm(test)
+```
+
+short test. Unique region_ids
+```{r}
+if(any(duplicated(regions$region_id))){
+  cat("Ohh no!!!!!!!!! not unique ids, check previous steps :(")
+}else{
+  cat("Great!! we have only unique regions.")
+}
+```
+
+Load transcripts universe
+
+```{r}
+transcripts <- readRDS(file = "Data/hg38/hg38_transcripts_universe_221121.rds")
+```
+
+## Set up
+
+First, let's define the center of the regions
+
+```{r}
+regions <- regions %>% GetRegionsCenter()
+```
+
+Let's initiate the new columns
+
+```{r}
+#select columns in regions
+sel_columns <- c("chr", "start","end","center", "region_id")
+regions <- regions %>% select(all_of(sel_columns))
+#init the nearest gene as NA
+regions <- regions %>% mutate(nearest_gene = NA)
+#init distance to nearest gene
+regions <- regions %>% mutate(dist_to_nearest_transcript = 0)
+#init transcript_id to nearest transcript
+regions <- regions %>% mutate(nearest_transcript_id = NA)
+#init tss of nearest transcript
+regions <- regions %>% mutate(nearest_transcript_tss = 0)
+rm(sel_columns)
+```
+
+## Get the nearest TSS
+
+For each unique id, we want to get the nearest TSS
+
+```{r}
+#the process need to be done by chromosome
+chromosomes <- levels(regions$chr)
+ann_tss_chr <- lapply(X = chromosomes, FUN = function(ch){
+  #get the regions in the current chromosome
+  chr_regions <- regions %>% filter(chr == ch)
+  #get the transcripts in the current chromosome
+  chr_transcripts <- transcripts %>% filter(chr == ch)
+  
+  #for each row in the chr_regions
+  for(r in seq_len(nrow(chr_regions))){
+    #get the center of current row
+    c_center = chr_regions[r,"center"]
+    #get the index of the nearest gene
+    min_ct_idx <- which.min(x = abs(c_center - chr_transcripts$tss))
+    
+    #short test
+    if(length(min_ct_idx) >1){
+      warning("Error. More than one nearest TSS. Choosing the first one in the list",call. = TRUE)
+      min_ct_idx <- min_ct_idx[1]
+    }
+    
+    #get the nearest transcript
+    nearest_transcript = chr_transcripts[min_ct_idx,]
+    
+    #assign the nearest gene
+    chr_regions[r,"nearest_gene"] <- nearest_transcript$gene_name
+    #assign distance the nearest gene
+    chr_regions[r,"dist_to_nearest_transcript"] <- nearest_transcript$tss - c_center
+    #assign the nearest transcript id
+    chr_regions[r,"nearest_transcript_id"] <- nearest_transcript$transcript_id
+    #assign the nearest transcript tss
+    chr_regions[r,"nearest_transcript_tss"] <- nearest_transcript$tss
+  }
+  return(chr_regions)
+})
+
+#short test
+sapply(X = ann_tss_chr, FUN = TestNearestGene, genes_df = transcripts)
+```
+Merge the results
+
+```{r}
+ann_tss <- Reduce(f = rbind, x = ann_tss_chr)
+rm(ann_tss_chr)
+```
+
+short test
+```{r}
+cat("Same number of rows OK: \n")
+nrow(ann_tss) == nrow(regions)
+cat("Same region ids OK:\n")
+sum(ann_tss$region_id %in% regions$region_id) == nrow(ann_tss)
+```
+
+If we have two TRUE, then everything looks good. Let's save the data.
+
+## Save data
+
+```{r}
+saveRDS(object = ann_tss, file = paste0(out_dir, "/nearest_tss_annotated_",date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

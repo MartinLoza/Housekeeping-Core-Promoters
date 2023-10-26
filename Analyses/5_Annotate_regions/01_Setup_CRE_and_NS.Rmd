@@ -1,0 +1,93 @@
+---
+title: "Setup ABC + NS "
+author: "Martin loza"
+date: "2023/02/10"
+---
+
+In this workflow I will setup the regions (ABC + NS) for further annotations.
+
+```{r setup}
+library(dplyr)
+
+## Global variables
+date = "230210"
+seed = 777
+in_dir <- "Data/"
+out_dir = "Data/annotated/"
+
+## Global functions
+source("Analysis/Functions.R")
+
+#Local functions
+```
+
+## Load data
+
+Load the ABC regions
+
+```{r}
+#load abc regions 
+regions <- readRDS(file = paste0(in_dir, "/merged/merged_nearest_gene_221130.rds"))
+u_regions <- regions %>% GetUniqueRegions()
+CheckEnhancers(enhancers = u_regions)
+table(u_regions$n_celltypes)
+rm(regions)
+gc()
+```
+
+Load the NS 
+
+```{r}
+negative_samples <- readRDS(file = paste0(in_dir, "/negative_samples/negative_samples_230210.rds"))
+nrow(negative_samples)
+```
+
+Let's confirm that the regions don't overlap
+
+```{r}
+ovl <- WhichRegionsOverlap(query_enhancer = u_regions, subject_enhancer = negative_samples,min_overlap = 0)
+cat("Number of overlaps: \n", length(subjectHits(ovl)))
+rm(ovl)
+```
+
+Great, no overlaps. 
+
+## Set up
+
+Let's setup the regions. We need chr, start, end, region_id and type
+
+```{r}
+#create region_id on negative samples
+negative_samples <- negative_samples %>% GetRegionIds()
+#add type for identification of abc or NS
+negative_samples <- negative_samples %>% mutate(type = "NS")
+u_regions <- u_regions %>% mutate(type = "ABC")
+#select columns
+sel_cols <- c("chr", "start", "end", "region_id", "type")
+negative_samples <- negative_samples %>% select(all_of(sel_cols))
+u_regions <- u_regions %>% select(all_of(sel_cols))
+```
+
+## Merge 
+
+Let's merge the data
+
+```{r}
+merged_data <- rbind(u_regions, negative_samples)
+table(merged_data$type)
+colnames(merged_data)
+```
+
+## Save the merged data
+
+```{r}
+saveRDS(object = merged_data, file = paste0(out_dir,"merged_u_regions_NS_", date,".rds"))
+```
+
+
+
+
+
+
+
+
