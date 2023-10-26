@@ -1,0 +1,535 @@
+---
+title: "Unsupervised analysis"
+author: "Martin loza"
+date: "2023/02/15"
+---
+
+In previous workflows I obtained diverse kind of annotations of the extended ABC + NS (e.g. regions +-500bps). The annotations are:
+- Histone modifications
+- Nucleotids content and CpG content
+- Nearest TSS
+- ABC annotations (number of cell types, number of target genes, etc.)
+- Conservation score
+
+I performed QC based on the percentage of Ns and the number of overlapping cell types for the histone marks.
+
+I normalized the annotations. Each annotations was independently analysed and the type of normalization were chose accordingly.
+
+On this workflow I would like to perform the first unsupervised analysis of the regions. Most probably I will filter out clusters of regions correlated with NS. So I expect this workflow to serve as an extra QC step.
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(umap)
+library(bluster)
+library(igraph)
+library(reticulate)
+
+## Global variables
+date = "230215"
+seed = 777
+in_dir = "Data/annotated/"
+out_dir = in_dir
+my_color = "deepskyblue4"
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+
+ClusterLouvain <- function(x, k = 10, resolution = 0.5) {
+  
+  g <- bluster::makeSNNGraph(x, k = k)
+  res <- igraph::cluster_louvain(g, resolution = resolution)
+
+  memberships <- igraph::membership(res)
+  
+  return(memberships)
+}
+
+LegendDotSize <- function(size = 5){
+  return(guides(colour = guide_legend(override.aes = list(size=size))))
+}
+```
+
+## Load regions
+
+Load annotations: histone, cpg, distance to nearest tss
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "u_regions_NS_normalized_230215.rds"))
+
+#short number of regions  
+test <- table(regions$type) == c(184913,6605)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS + ABC regions OK")
+}
+rm(test)
+```
+
+```{r}
+colnames(regions)
+```
+
+## Set up
+
+Selected features for unsupervised analysis
+
+```{r}
+features <- c("H3K27ac"  , "H3K4me1", "H3K4me3",
+              "H3K27me3", "H3K36me3", "H3K9ac",
+              "H3K9me3",
+              "pct_GC_norm", "pct_AT_norm", "per_N_norm", "obsExp_CpG_norm",
+              "dist_to_nearest_transcript_norm",
+              "conservation_score_norm")
+
+cat("Number of features: \n", length(features))
+cat("\nNAs in features OK: \n", any(!is.na(regions[,features])))
+```
+
+Add label for visualizations
+
+```{r}
+regions <- regions %>% mutate(type = "other") 
+types <- c(1,2,5,10,15,20, 25, 30, 35, 40, 50, "NS")
+for(t in types){
+  #get indexed cells
+  idx <- which(regions$n_celltypes == t)
+  #set cts type
+  if(t == "1"){
+    regions$type[idx] <- "CTS"
+  }else if(t == "50"){
+    regions$type[idx] <- "HK"
+  }else{
+    regions$type[idx] <- t
+  }
+}
+rm(idx)
+
+regions$type <- factor(regions$type, levels = c("CTS",2,5,10,15,20, 25, 30, 35, 40, "HK", "NS", "other"))
+
+table(regions$type)
+rm(types, t)
+```
+
+## Unsupervised analysis
+
+## Analysis using the main histone marks
+
+Selected features for unsupervised analysis
+
+```{r}
+features <- c("H3K27ac"  , "H3K4me1", "H3K4me3",
+              "pct_GC_norm", "pct_AT_norm", "obsExp_CpG_norm",
+              "dist_to_nearest_transcript_norm")
+
+cat("Number of features: \n", length(features))
+cat("\nNAs in features OK: \n", any(!is.na(regions[,features])))
+```
+
+### Scaled data
+
+I would like to save the scaled data separately for future analyses.
+
+```{r}
+scaled_data <- apply(X = regions[,features], MARGIN = 2, FUN = scale, center = TRUE, scale = TRUE)
+colnames(scaled_data) <- paste0(colnames(scaled_data),"_scaled")
+```
+
+### PCA
+
+Let's calcualte the PCA and confirm the variance captured.
+```{r}
+set.seed(seed)
+pca_data <- prcomp(x = scaled_data, center = FALSE, scale. = FALSE, rank. = length(features))
+plot(y = pca_data$sdev, x = 1:length(pca_data$sdev))
+```
+
+Analyse the relation between PCs and features
+
+```{r}
+pca_data$rotation
+```
+
+Update embedding data frame
+
+```{r}
+data_embeddings <- cbind(regions, scaled_data, as.data.frame(pca_data$x))
+```
+
+Visualize the CREs in the first 3 PCs
+
+```{r fig.width=4}
+p_size = 0.5
+sel_regions <- data_embeddings %>%
+  mutate(n_celltypes = factor(n_celltypes)) %>% arrange(n_celltypes)
+p1 <- sel_regions %>% ggplot(mapping = aes(x = PC1, y = PC2)) + geom_point(size = p_size, colour = my_color) + theme_bw() + coord_fixed()
+p2 <- sel_regions %>% ggplot(mapping = aes(x = PC1, y = PC3)) + geom_point(size = p_size, colour = my_color) + theme_bw() 
+p3 <- sel_regions %>% ggplot(mapping = aes(x = PC2, y = PC3)) + geom_point(size = p_size, colour = my_color) + theme_bw() 
+
+p1 + p2 + p3 + plot_layout(guides = "collect") 
+
+rm(sel_regions,p1,p2,p3)
+```
+
+```{r fig.width=4, fig.height=4}
+p_size = 0.1
+p <- PlotGroups(object = data_embeddings, group = "type", dim1 = "PC1", dim2 = "PC2",
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+
+p$NS + p$CTS + p$`2` + p$`5` + p$`10` +
+  p$`15` + p$`20` + p$`25` + p$`30` +
+  p$`35` + p$`40` + p$HK  +
+  plot_layout(nrow = 3) & NoLegend() & coord_fixed() & NoAxis() 
+rm(p)
+```
+
+### UMAP
+
+For now, let's use all the PCs. In future iterations I expect this number to change.
+Let's calculate the UMAP represenation
+
+```{r}
+dims = length(features)
+set.seed(seed)
+umap_data <- umap(d = pca_data$x[,1:dims], preserve.seed = TRUE)
+```
+
+Update the embeddings data frame
+
+```{r}
+data_embeddings <- cbind(regions, scaled_data, as.data.frame(pca_data$x))
+data_embeddings <- cbind(data_embeddings, as.data.frame(umap_data$layout))
+```
+
+Visualize the CREs in the UMAP
+
+```{r fig.width=4, fig.height=4}
+p_size = 0.1
+p <- PlotGroups(object = data_embeddings, group = "type", dim1 = "V1", dim2 = "V2",
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+
+p$NS + p$CTS + p$`2` + p$`5` + p$`10` +
+  p$`15` + p$`20` + p$`25` + p$`30` +
+  p$`35` + p$`40` + p$HK  +
+  plot_layout(nrow = 3) & NoLegend() & coord_fixed() & NoAxis() 
+
+# rm(p)
+```
+
+Features plots
+
+```{r}
+p_size = 0.1
+tmp <- data_embeddings %>% mutate("Dim1" = V1, "Dim2" = V2) 
+pf <- list()
+for(n in colnames(scaled_data)){
+  pf[[n]] <- tmp %>% myFeaturePlot(feature = n, order = TRUE, point_size = p_size, text_size = 14, high_color = my_color) + ggtitle(n)
+}
+
+p$NS + p$CTS + p$HK +
+  pf[[1]] +  pf[[2]] + pf[[3]] +
+  plot_layout(ncol = 3)  & 
+  coord_fixed() & NoAxis() & theme(axis.line = element_line())
+```
+
+There is a cluster with low levels of the main Histone marks
+
+### Clustering
+
+Let's get those CREs with low levels of these three marks and high density of NS and CTS
+
+```{r}
+set.seed(777)
+clusters <- ClusterLouvain(x = data_embeddings[,paste0("PC", 1:7)], resolution = 0.3, k = 30)
+table(clusters)
+data_embeddings <- data_embeddings %>% mutate(cluster = factor(clusters))
+# rm(clusters)
+```
+
+Visualize the clusters in the UMAP plot
+
+```{r fig.width=3}
+data_embeddings %>% ggplot( mapping = aes(x = V1, y = V2, color = cluster)) + geom_point(size = p_size) + theme_bw() + coord_fixed() + LegendDotSize(size = 5)
+```
+
+Calculate the proportion of CREs by cell types across cluster
+
+```{r fig.width=6, fig.height=2}
+palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#6699CC",   "#AA4499", 
+                 "#888888", "#44AA99", "#999933", "#332288","#E69F00", "black", "blue", "gray")
+
+p1 <- data_embeddings %>% group_by(cluster) %>% count(type) %>% ggplot(mapping = aes(x = cluster, y = n, fill = type)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+p2 <- data_embeddings %>% group_by(type) %>% count(cluster) %>% ggplot(mapping = aes(x = type, y = n, fill = cluster)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+
+p1 + p2 
+```
+
+The suspicious CREs are captured in cluster 5. 
+More than half of the CREs in cluster 5 are Negative samples.  Let's remove this cluster and re-do the analysis.
+
+### Second interation
+
+Remove CREs from cluster 5 
+
+```{r}
+regions_filtered <- regions %>% filter(data_embeddings$cluster != 5)
+rm(regions)
+```
+
+Re-scale the data -> calculate PCA 
+
+I would like to save the scaled data separately for future analyses.
+
+```{r}
+scaled_data <- apply(X = regions_filtered[,features], MARGIN = 2, FUN = scale, center = TRUE, scale = TRUE)
+colnames(scaled_data) <- paste0(colnames(scaled_data),"_scaled")
+#PCA
+set.seed(seed)
+pca_data <- prcomp(x = scaled_data, center = FALSE, scale. = FALSE, rank. = length(features))
+plot(y = pca_data$sdev, x = 1:length(pca_data$sdev))
+```
+
+For now, let's use all the PCs. In future iterations I expect this number to change.
+Let's calculate the UMAP representation
+
+```{r}
+dims = length(features)
+set.seed(seed)
+umap_data <- umap(d = pca_data$x[,1:dims], preserve.seed = TRUE)
+```
+
+Update embeddings
+
+```{r}
+data_embeddings <- cbind(regions_filtered, scaled_data, as.data.frame(pca_data$x))
+data_embeddings <- cbind(data_embeddings, as.data.frame(umap_data$layout))
+```
+
+Clustering
+
+```{r}
+set.seed(777)
+clusters <- ClusterLouvain(x = data_embeddings[,paste0("PC", 1:7)], resolution = 0.3, k = 30)
+table(clusters)
+data_embeddings <- data_embeddings %>% mutate(cluster = factor(clusters))
+# rm(clusters)
+```
+
+Visualize clusters
+
+```{r fig.width=3}
+data_embeddings %>% ggplot( mapping = aes(x = V1, y = V2, color = cluster)) + geom_point(size = p_size) + theme_bw() + coord_fixed() + LegendDotSize(size = 5)
+```
+
+Calculate the proportion of CREs by cell types across clusters
+
+```{r fig.width=6, fig.height=2}
+palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#6699CC",   "#AA4499", 
+                 "#888888", "#44AA99", "#999933", "#332288","#E69F00", "black", "blue", "gray")
+
+p1 <- data_embeddings %>% group_by(cluster) %>% count(type) %>% ggplot(mapping = aes(x = cluster, y = n, fill = type)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+p2 <- data_embeddings %>% group_by(type) %>% count(cluster) %>% ggplot(mapping = aes(x = type, y = n, fill = cluster)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+
+p1 + p2 
+```
+
+Cluster 5 and 2 are suspicious. Let's analyze these clusters independently
+
+### Sub-clustering analysis of cluster 5
+
+Select CREs from cluster 5
+
+```{r}
+cl5 <- data_embeddings %>% filter(data_embeddings$cluster == 5)
+table(cl5$n_celltypes)
+```
+
+Re-scale -> PCA
+
+```{r}
+scaled_data <- apply(X = cl5[,features], MARGIN = 2, FUN = scale, center = TRUE, scale = TRUE)
+colnames(scaled_data) <- paste0(colnames(scaled_data),"_scaled")
+#PCA
+set.seed(seed)
+pca_data <- prcomp(x = scaled_data, center = FALSE, scale. = FALSE, rank. = length(features))
+plot(y = pca_data$sdev, x = 1:length(pca_data$sdev))
+```
+
+UMAP
+
+```{r}
+dims = length(features)
+set.seed(seed)
+umap_cl5 <- umap(d = pca_data$x[,1:dims], preserve.seed = TRUE)
+```
+
+Update embeddings of cluster 5
+
+```{r}
+cl5_embeddings <- cbind(cl5, scaled_data, as.data.frame(pca_data$x))
+cl5_embeddings <- cbind(cl5_embeddings, as.data.frame(umap_cl5$layout))
+```
+
+Sub-clustering
+
+```{r}
+set.seed(777)
+clusters_cl5 <- ClusterLouvain(x = cl5_embeddings[,paste0("PC", 1:7)], resolution = 0.3, k = 30)
+table(clusters_cl5)
+cl5_embeddings$cluster <- factor(clusters_cl5)
+# rm(clusters)
+```
+
+Visualize clusters
+
+```{r fig.width=3}
+cl5_embeddings %>% ggplot( mapping = aes(x = V1, y = V2, color = cluster)) + geom_point(size = p_size) + theme_bw() + coord_fixed() + LegendDotSize(size = 5)
+```
+
+Proportion of CREs in clusters
+
+```{r fig.width=6, fig.height=2}
+palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#6699CC",   "#AA4499", 
+                 "#888888", "#44AA99", "#999933", "#332288","#E69F00", "black", "blue", "gray")
+
+p1 <- cl5_embeddings %>% group_by(cluster) %>% count(type) %>% ggplot(mapping = aes(x = cluster, y = n, fill = type)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+p2 <- cl5_embeddings %>% group_by(type) %>% count(cluster) %>% ggplot(mapping = aes(x = type, y = n, fill = cluster)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+
+p1 + p2 
+```
+
+Select suspicious CREs
+
+```{r}
+cl5_rmv <- cl5_embeddings %>% filter(cluster != 1)
+table(cl5_rmv$cluster)
+```
+
+let's filter suspicious CREs from the original data.
+
+```{r}
+data_embeddings <- data_embeddings %>% filter(!region_id %in% cl5_rmv$region_id)
+rm(cl5, cl5_embeddings, cl5_rmv, clusters_cl5, umap_cl5)
+```
+
+```{r}
+table(data_embeddings$cluster)
+```
+
+### Sub-clustering analysis of cluster 2
+
+Let's do the same analysis for cluster 2 
+
+```{r}
+cl2 <- data_embeddings %>% filter(data_embeddings$cluster == 2)
+table(cl2$n_celltypes)
+```
+
+remove previous PCA and umap
+
+```{r}
+rmv_idx <- which(colnames(cl2) %in% c(paste0("PC",1:7) ,"V1", "V2"))
+cl2 <- cl2[,-rmv_idx]
+```
+
+Re-scale -> PCA
+
+```{r}
+scaled_data <- apply(X = cl2[,features], MARGIN = 2, FUN = scale, center = TRUE, scale = TRUE)
+colnames(scaled_data) <- paste0(colnames(scaled_data),"_scaled")
+#PCA
+set.seed(seed)
+pca_data <- prcomp(x = scaled_data, center = FALSE, scale. = FALSE, rank. = length(features))
+plot(y = pca_data$sdev, x = 1:length(pca_data$sdev))
+```
+
+UMAP
+
+```{r}
+dims = length(features)
+set.seed(seed)
+umap_cl2 <- umap(d = pca_data$x[,1:dims], preserve.seed = TRUE)
+```
+
+Update embeddings
+
+```{r}
+cl2_embeddings <- cbind(cl2, as.data.frame(pca_data$x))
+cl2_embeddings <- cbind(cl2_embeddings, as.data.frame(umap_cl2$layout))
+```
+
+Sub-clustering
+
+```{r}
+set.seed(777)
+clusters_cl2 <- ClusterLouvain(x = cl2_embeddings[,paste0("PC", 1:7)], resolution = 0.3, k = 30)
+table(clusters_cl2)
+cl2_embeddings$cluster <- factor(clusters_cl2)
+# rm(clusters)
+```
+
+Visualize clusters
+
+```{r fig.width=3}
+cl2_embeddings %>% ggplot( mapping = aes(x = V1, y = V2, color = cluster)) + geom_point(size = p_size) + theme_bw() + coord_fixed() + LegendDotSize(size = 5)
+```
+
+Proportion of clusters
+
+```{r fig.width=6, fig.height=2}
+palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#6699CC",   "#AA4499", 
+                 "#888888", "#44AA99", "#999933", "#332288","#E69F00", "black", "blue", "gray")
+
+p1 <- cl2_embeddings %>% group_by(cluster) %>% count(type) %>% ggplot(mapping = aes(x = cluster, y = n, fill = type)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+p2 <- cl2_embeddings %>% group_by(type) %>% count(cluster) %>% ggplot(mapping = aes(x = type, y = n, fill = cluster)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+
+p1 + p2 
+```
+
+select suspicious regions
+
+```{r}
+cl2_rmv <- cl2_embeddings %>% filter(cluster == 1)
+table(cl2_rmv$cluster)
+```
+
+remove suspicious regions from the original data.
+
+```{r}
+data_embeddings <- data_embeddings %>% filter(!region_id %in% cl2_rmv$region_id)
+rm(cl2, cl2_embeddings, cl2_rmv, clusters_cl2, umap_cl2)
+table(data_embeddings$type)
+```
+
+Short test
+regions with zero signals for histones?
+```{r}
+sel_ann <- c("H3K27ac_n_cts", "H3K4me1_n_cts", "H3K4me3_n_cts")
+sel_regions <- data_embeddings
+for(ann in sel_ann){
+  sel_regions <- sel_regions %>% filter(.data[[ann]] == 0)
+}
+
+sel_regions %>% MyHistogram(x = "n_celltypes", stat = "count") + scale_y_continuous(trans = "sqrt", breaks = c(0,100,1000,2000, 6000)) 
+
+rm(ann, sel_ann, sel_regions)
+```
+
+Noup!!! this looks good. Let's get the final filtered regions on this loop 
+
+```{r}
+regions_filtered <- regions_filtered %>% filter(region_id %in% data_embeddings$region_id)
+rm(data_embeddings)
+```
+
+## Save filtered regions
+
+```{r}
+saveRDS(object = regions_filtered, paste0(out_dir, "/u_regions_NS_filtered_2_", date, ".rds"))
+```
+

@@ -1,0 +1,117 @@
+---
+title: "Normalization of annotated ABC + NS"
+author: "Martin loza"
+date: "2023/02/15"
+---
+
+In previous workflows I obtained diverse kind of annotations of the extended ABC + NS (e.g. regions +-500bps). The annotations are:
+- Main histone modifications
+- Nucleotids content and CpG content
+- Nearest TSS
+- ABC annotations (number of cell types, number of target genes, etc.)
+- Conservation score
+
+I also performed QC based on the percentage of Ns and the number of overlapping cell types for the histone marks.
+
+On this workflow I would like to perform QC of the annotations that need it.
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+## Global variables
+date = "230215"
+seed = 777
+in_dir = "Data/annotated/"
+out_dir = in_dir
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+
+```
+
+## Load regions
+
+Load annotated regions 
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/u_regions_NS_annotated_230215.rds"))
+
+#short number of regions  
+test <- table(regions$type) == c(184913,6605)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS + ABC regions OK")
+}
+rm(test)
+```
+
+```{r}
+colnames(regions)
+```
+
+## Normalization
+
+We analized each features independently and how different normalization affect their distribution. For more info check the Github repository containing the whole set of test/results/etc.
+
+The next normalization/scaling will be performed
+
+- Histone marks: nothing
+- Nucleotide content (per_AT, per_GC, exp/obs CpG, per_N):  log1p
+- Distance to nearest TSS: abs + log1p
+- Conservation score" add offset (minimum of the conservation score) + log1p
+
+```{r}
+#normalize nucleotide content:  log1p + scaling
+sel_ann <- c("pct_GC", "pct_AT", "per_N", "obsExp_CpG")
+for(ann in sel_ann){
+  label = paste0(ann, "_norm")
+  regions[[label]] <- log1p(regions[[ann]])
+}
+rm(sel_ann, ann)
+```
+
+```{r}
+#normalize the distance to nearest TSS: abs + log1p
+sel_ann <- c("dist_to_nearest_transcript")
+for(ann in sel_ann){
+  label = paste0(ann, "_norm")
+  regions[[label]] <- log1p(abs(regions[[ann]]))
+}
+rm(sel_ann, ann)
+```
+
+```{r}
+#normalize the conservation score: add offset (abs of the minimum of the conservation score) + log1p
+sel_ann <- c("conservation_score")
+for(ann in sel_ann){
+  label = paste0(ann, "_norm")
+  min_cs <- abs(min(regions$conservation_score))
+  regions[[label]] <- log1p(regions[[ann]] + min_cs)
+}
+rm(sel_ann, ann)
+```
+
+## Save normalized regions
+
+```{r}
+saveRDS(object = regions, paste0(out_dir, "/u_regions_NS_normalized_", date, ".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
