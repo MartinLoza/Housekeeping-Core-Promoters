@@ -43,11 +43,7 @@ AddMD <- function(overlapping_ids = NULL, raw_data = NULL, current_region = NULL
                     "test_n_celltypes","n_regions", "mean_ABCScores",
                     "Median_ABCScores","Fst_quantile_ABCScores", "Trd_quantile_ABCScores",
                     "min_ABCScores", "max_ABCScores", "raw_CTSE",
-                    "filtered_10prc_enhancers", "filtered_10prc_ids", 
-                    "n_abc_classes", "abc_classes",
-                    "n_classes_genic", "classes_genic",
-                    "n_classes", "classes",
-                    "n_classes_advanced", "classes_advanced")
+                    "filtered_10prc_enhancers", "filtered_10prc_ids")
   new_columns <- data.frame(matrix(data = NA, ncol = length(new_colnames))) 
   colnames(new_columns) <- new_colnames
   
@@ -56,22 +52,6 @@ AddMD <- function(overlapping_ids = NULL, raw_data = NULL, current_region = NULL
   
   #Get the overlapping regions
   overlapping_raw <- raw_data[overlapping_ids,]
-  
-  ################
-  # I DONT NEED THIS FILTER ANYMORE
-  ################
-  # #Filter genes overlapping with the core enhancers
-  # ovl_ids <- which(overlapping_raw$tss >= current_region$start &
-  #                    overlapping_raw$tss <= current_region$end)
-  # #if tss overlapping with current enhancer
-  # if(length(ovl_ids) != 0){
-  #   #save info for debug
-  #   current_region["Enhancer_TSS_overlap"] = TRUE
-  #   current_region["ovl_ids"] = paste(overlapping_raw[ovl_ids,"region_id"], collapse = "/")
-  #   #filter enhancers overlapping with TSS
-  #   overlapping_raw <- overlapping_raw[-ovl_ids,]
-  # }
-  
   #statistics for ABCscores
   stat_abc <- quantile(x = overlapping_raw$ABC.Score, probs = c(0.25,0.5,0.75), na.rm = TRUE)
   
@@ -82,18 +62,6 @@ AddMD <- function(overlapping_ids = NULL, raw_data = NULL, current_region = NULL
   ## celltypes info
   current_region["celltypes"] <- paste(unique(overlapping_raw$CellType), collapse = "/")
   current_region["test_n_celltypes"] <- length(unique(overlapping_raw$CellType))
-  ## classes info
-  current_region["n_abc_classes"] <- length(unique(overlapping_raw$abc_class))
-  current_region["abc_classes"] <- paste(unique(overlapping_raw$abc_class), collapse = "/")
-  
-  current_region["n_classes_genic"] <- length(unique(overlapping_raw$class_genic))
-  current_region["classes_genic"] <- paste(unique(overlapping_raw$class_genic), collapse = "/")
-  
-  current_region["n_classes"] <- length(unique(overlapping_raw$class))
-  current_region["classes"] <- paste(unique(overlapping_raw$class), collapse = "/")
-  
-  current_region["n_classes_advanced"] <- length(unique(overlapping_raw$class_advanced))
-  current_region["classes_advanced"] <- paste(unique(overlapping_raw$class_advanced), collapse = "/")
   ## regions info
   current_region["n_regions"] <- length(overlapping_ids)
   ## ABCscores info
@@ -118,7 +86,6 @@ AddMD <- function(overlapping_ids = NULL, raw_data = NULL, current_region = NULL
     g = genes[i]
     #get transcription start site
     tss <- overlapping_raw %>% filter(TargetGene == g) %>% pull(tss) %>% unique()
-    #add missing meta data
     current_region[i,"gene"] <- g
     current_region[i,"tss"] <- tss
     current_region[i,"distance"] <- abs(tss - current_region[i,"center"])
@@ -146,9 +113,6 @@ TransferMD <- function(core_enhancers = NULL, raw_enhancers = NULL){
     current_region <- AddMD(overlapping_ids = overlapping_ids, 
                             raw_data = raw_enhancers, current_region = current_region )
     
-    #Test test test 
-    ## overlapping with 0 bases. I am wondering if the non-matching regions are due to the min_overlap condition.
-    #Then, I will save this info for future debug.
     #get test idx with minimum of 0 bases overlapp (even 1 base of overlap is OK)
     t_idx <- WhichOverlapEnhancer(query_enhancer = current_region,
                                   subject_enhancer = raw_enhancers,
@@ -172,3 +136,94 @@ TransferMD <- function(core_enhancers = NULL, raw_enhancers = NULL){
   }
   return(region_expanded)
 }
+
+# Merge regions, non strict
+MergeRegions <- function(regions_df = NULL, start = "start", end = "end"){
+  #Reduce regions using Granges
+  gr <- ReduceRegions(regions_df = regions_df)
+  #Setup reduced regions to add MD
+  merged_data <- data.frame("chr" = factor(seqnames(gr), levels = paste0("chr",c(1:22,"X"))),
+                            GenomicRanges::ranges(gr))
+  colnames(merged_data) <- c("chr", "start", "end", "length")
+  #Pass the MD from the original regions to the merged ones
+  merged_data <- ReduceRegion_addMD(from_df = regions_df, to_df = merged_data)
+  #Return the merged data
+  return(merged_data)
+}
+
+#Merged regions using Granges. The output already contains the MD
+MergeRegions_strict <- function(regions_df = NULL, start = "start", end = "end", verbose = FALSE, build = "hg38"){
+  #Setup the regions to use bedr
+  #Set the regions in the bedr format
+  regions_df <- regions_df %>% mutate(CellType = factor(CellType))
+  regions_ls <- regions_df %>% select(all_of(c("chr", start, end))) %>%  split(f =  regions_df$CellType)
+  
+  #In previous test I found that there are problems if we used the cell types names. Then, for now I will just create dummy names
+  #Create dummy names
+  dummy_names <- paste0("ct_", 1:length(regions_ls))
+  names(dummy_names) <- names(regions_ls)
+  #Assign dummy names
+  names(regions_ls) <- dummy_names
+  
+  ##Make sure chromosome information is a character vector. It will give an error if the chromosome information is a factor.
+  regions_ls <- lapply(X = regions_ls, FUN = function(r){
+    r[["chr"]] <- as.character(r[["chr"]])
+    return(r)
+  })
+  
+  #Merge and sort region across cell types to avoid errors when joining with bedr
+  regions_ls <- lapply(X = regions_ls, FUN = bedr.merge.region, verbose = verbose)
+  regions_ls <- lapply(X = regions_ls, FUN = bedr.sort.region, verbose = verbose)
+  #Join multile using bedr. This is equivalent to the strict merge we want
+  merged_regions <- bedr.join.multiple.region(x = regions_ls,
+                                              check.sort = FALSE,
+                                              check.chr = FALSE, 
+                                              check.valid = FALSE, 
+                                              check.merge = FALSE,
+                                              build = build,
+                                              verbose = verbose)
+  
+  #Setup the output to match the standard output used until now
+  merged_regions <- merged_regions %>% 
+    mutate(chr = V1, start = V2, end = V3) %>% 
+    mutate(length = end - start,
+           n_celltypes = merged_regions$n.overlaps,
+           dummy_celltypes = merged_regions$names) %>% 
+    select(chr, start, end, length, n_celltypes, dummy_celltypes)
+  
+  #Get the original cell types
+  merged_regions <- merged_regions %>% mutate(celltypes = dummy_celltypes)
+  # we go inverse to avoid incorrect detection, e.g. detedt ct11 as ct1
+  for (i in length(dummy_names):1){
+    merged_regions$celltypes <- stringr::str_replace(string = merged_regions$celltypes,
+                                                     pattern = dummy_names[i], 
+                                                     replacement = names(dummy_names)[i])
+  }
+  
+  #Contiguous regions sometimes the overlap in the start and end, then I will add one base
+  #to the start of each merged regions
+  merged_regions <- merged_regions %>%
+    mutate(start = (merged_regions$start + 1)) %>% #add one to the start 
+    mutate(length = end - start) # update length
+  
+  #Change  n_celltypes from character to integer
+  merged_regions <- merged_regions %>% mutate(n_celltypes = as.numeric(n_celltypes))
+  
+  return(merged_regions)
+}
+
+#Merge HKE after strict overlap "MergeRegions_strict" function
+RelaxHKE <- function(merged_enhancers = NULL, per = 0.8, distance = 20){
+  #get the max number of cell types
+  n_cts = max(merged_enhancers$n_celltypes)
+  cat("Number of cell types used as HKE:\n", round(x = n_cts*per, digits = 0), "-", n_cts)
+  #setup for merge using bedr
+  hke <- merged_enhancers %>%
+    filter(n_celltypes >= round(x = n_cts*per, digits = 0)) %>% 
+    select(chr, start, end)
+  #merge with bedr
+  hke <- bedr.merge.region(x = hke, verbose = FALSE, distance = distance)
+  hke <- hke %>% mutate(length = end - start)
+  return(hke)
+}
+
