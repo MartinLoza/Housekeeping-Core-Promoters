@@ -1,0 +1,239 @@
+---
+title: "Get gap regions"
+author: "Martin loza"
+date: "2023/02/10"
+---
+
+I would like to define a set of negative controls (negative samples). For quality control of the ABC enhancers.
+
+For this, we would use define the negative samples as DNA regions non-overlapping with the union of ABC enhancers + SCREEN cis-regulatory elements. 
+
+```{r setup}
+library(dplyr)
+library(GenomicRanges)
+library(ggplot2)
+
+## Global variables
+date = "230210"
+seed = 777
+in_dir <- "Data/"
+out_dir = in_dir
+
+## Global functions
+source("~/Documents/Projects/Enhancer_Grammar/Analysis/Functions.R")
+source("~/Documents/Projects/Enhancer_Grammar/Analysis/Functions_Visualizations.r")
+#Local functions
+
+```
+
+## Load data 
+
+Load the universe of ABC regions (e.g. from 131 celltypes)
+
+```{r}
+abc_regions <- readRDS(file = paste0(in_dir, "/raw_enhancers/merged/03_2_hg38_regions_universe_221121.rds"))
+cat("Number of cell types: \n")
+length(unique(abc_regions$CellType))
+cat("Number of original regions: \n")
+nrow(abc_regions)
+cat("Number of chromosomes: \n")
+length(unique(abc_regions$chr))
+```
+
+In this version of the regions, there is no regions id, therefore, let's create it, get the unique regions and select important columns
+
+```{r}
+abc_regions <- abc_regions %>% mutate(region_id = paste0(chr,":", start, "-", end))
+abc_regions <- GetUniqueRegions(.data = abc_regions) %>% select(chr, start, end)
+cat("Number of unique regions: \n")
+nrow(abc_regions)
+gc()
+```
+Load cis-regulatory elements from ENCODE
+
+I got a database of candidate cis-reglatory elements from ENCODE (https://screen-v2.wenglab.org/). The elements are labelled as:
+- promoter-like (PLS)
+- proximal enhancer-like (pELS)
+- distal enhancer-like (dELS)
+- CTCT
+- DNase H3K4me3
+
+```{r}
+screen_regions <- read.table(file = "Data/Candidate_cisRegulatory/hg38_ENCODE.bed")
+```
+
+```{r}
+head(screen_regions)
+```
+
+The columns seems to be chr, start, end, id1, id2, type
+for now, let's just keep the chr, start, end, and type
+```{r}
+screen_regions <- screen_regions[,c(1,2,3)]
+colnames(screen_regions) <- c("chr", "start", "end")
+screen_regions <- as.data.frame(screen_regions)
+head(screen_regions)
+```
+
+## Merge overlapping regions
+
+We would like to merge overlapping regions from the ABC and SCREEN elements. In this way we will improve the definition of the negative regions. We can use the reduce function from GenomicRanges R package for this.
+
+```{r}
+cis_regions <- rbind(screen_regions, abc_regions)
+rm(abc_regions, screen_regions)
+```
+
+let's create a granges object
+
+```{r}
+granges_regions <- GRanges(seqnames = cis_regions$chr, 
+                           ranges = IRanges(start = cis_regions$start,
+                                            end = cis_regions$end))
+head(granges_regions)
+```
+I would like to know the distribution of the gaps between my regions 
+
+```{r}
+gaps <- GenomicRanges::gaps(x = granges_regions)
+head(gaps)
+```
+Let's check at the distribution of the gaps' length
+```{r}
+tmp <- as.data.frame(gaps)
+tmp %>% MyHistogram(x = "width", n_bins = 80) + scale_x_continuous(trans = "log")
+tmp %>% filter(width < 500) %>% MyHistogram(x = "width", n_bins = 80) 
+summary(tmp$width)
+```
+
+It looks like there are many regions less than 500 bp in the gaps. For now I will use a max gap of 100 bps to merge the regions.
+
+```{r}
+cis_regions <- GenomicRanges::reduce(x = granges_regions, min.gapwidth = 100)
+head(cis_regions)
+rm(granges_regions)
+```
+
+Now we can get the gaps from the new regions
+
+```{r}
+gaps <- GenomicRanges::gaps(x = cis_regions) 
+head(gaps)
+```
+Let's check the distribution of the gaps
+
+```{r}
+gaps <- as.data.frame(gaps) %>% mutate(chr = seqnames) %>% select(chr, start, end, width)
+```
+
+Let's check at the distribution of the gaps' length
+```{r}
+tmp <- gaps
+tmp %>% MyHistogram(x = "width", n_bins = 80) + scale_x_continuous(trans = "log")
+tmp %>% filter(width < 500) %>% MyHistogram(x = "width", n_bins = 80) 
+summary(tmp$width)
+rm(tmp)
+```
+
+### QC of the gaps
+
+First let's get rid of the chrY regions and gaps
+
+```{r}
+gaps <- gaps %>% filter(chr != "chrY")
+
+cis_regions <- as.data.frame(cis_regions) %>% mutate(chr = seqnames) %>% select(chr, start, end, width)
+cis_regions <- cis_regions %>% dplyr::filter(chr != "chrY")
+```
+
+We would like to filter gaps in the telomeres and in the centromeres.
+
+We can identify the telomeres by looking into the max and minimun regions on each chromosome, and then filtering the gaps that start, end in them
+
+From test 1, we see that we don't have to care about the end-telomeres, then, let's filter the beggining telomeres
+
+```{r}
+gaps <- gaps %>% filter(start != 1)
+```
+
+Now let's filter gaps in the centromeres. 
+Please download this information from figshare.
+
+```{r}
+centromeres <- readRDS(file = "Data/hg38/centromeres_230112.rds")
+```
+
+We can use the find overlaps functions from GenomicRanges
+
+```{r}
+granges_centromeres <- GRanges(seqnames = centromeres$chr,
+                               ranges = IRanges(start = centromeres$start,
+                                                end = centromeres$end))
+granges_gaps <- GRanges(seqnames = gaps$chr,
+                               ranges = IRanges(start = gaps$start,
+                                                end = gaps$end))
+overlaps <- GenomicRanges::findOverlaps(query = granges_centromeres, subject = granges_gaps)
+overlaps
+```
+
+Let's check some of these overlapping gaps with the centromeres
+
+```{r}
+gaps[29111,]
+centromeres[1,]
+```
+
+They looks ok, let's filter these gaps overlaping with centromeres
+
+```{r}
+gaps <- gaps[-subjectHits(overlaps),]
+```
+
+Let's save the final gaps regions 
+
+```{r}
+saveRDS(object = gaps, file = paste0(out_dir, "/negative_samples/gaps_filtered_", date, ".rds") )
+```
+
+## Tests
+
+### Test 1. Which is the last gap
+
+```{r}
+gaps %>% filter(chr == "chr2") %>% filter(end == max(end))
+```
+
+```{r}
+cis_regions %>% filter(chr == "chr2") %>% filter(end == max(end))
+```
+
+It look like they don't calculate the last gap to infinity, this is good, we don't have to care about the end telomere
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

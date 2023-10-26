@@ -1,0 +1,174 @@
+---
+title: "Define negative samples using SCREEN + ABC enhancers"
+author: "Martin loza"
+date: "2023/02/10"
+---
+
+In previous analyses I got the gaps from the union of ABC enhances and SCREEN regulatory elements. 
+
+On this notebook, I would like to define the negative samples.
+
+```{r setup}
+library(dplyr)
+library(GenomicRanges)
+library(ggplot2)
+
+## Global variables
+date = "230210"
+seed = 777
+
+in_dir = "Data/negative_samples/"
+out_dir <- in_dir
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+```
+
+## Load data 
+
+```{r}
+gaps <- readRDS(file = paste0(in_dir, "/gaps_filtered_230210.rds") )
+head(gaps)
+```
+
+## Define negative control samples
+
+I would like the negative control samples to fulfill the next:
+
+- Length = 500 bps (most of the ABC regions are 500 bps)
+- The center of the negative controls should be at leas 250bp away from any expanded ABC (abc +- 500bps). 
+
+Then, the NS should be:
+250bps (from the center of NS) +
+500bps (expanded NS for the histone modification marks) +
+500bps (expanded ABC) +
+250 extra bases away from any ABC+SCREEN regions, equals
+
+1500 bps on each side.
+
+Then, I would like to get negative samples by sampling gaps with at least 3000bps
+
+### QC of gaps' length
+
+Let's then filter the gaps to be at least 3000 bps length
+
+```{r}
+#lets recalculate the length and filter the gaps
+gaps_filtered <- gaps %>% 
+  mutate(length = end - start) %>%
+  select(chr, start, end, length) %>% 
+  filter(length >= 3000)
+rm(gaps)
+```
+
+```{r}
+cat("Number of gaps: \n")
+nrow(gaps_filtered)
+summary(gaps_filtered$length)
+cat("\nSummary of gaps' length: \n")
+summary(gaps_filtered$length)
+gaps_filtered %>% MyHistogram(x = "length") + scale_x_continuous(trans = "log")
+```
+
+We can observe that the number of gaps with length higher than 200000 is low
+
+```{r}
+gaps_filtered %>% filter(length >= 200000) %>% MyHistogram(x = "length") + scale_x_continuous(trans = "log")
+```
+
+I think we can filter these long regions 
+
+```{r}
+gaps_filtered <- gaps_filtered %>% filter(length <= 200000)
+cat("Summary of gaps' length: \n")
+summary(gaps_filtered$length)
+gaps_filtered %>% MyHistogram(x = "length") + scale_x_continuous(trans = "log")
+```
+
+### Redefine the gaps
+
+Now, I would like to standardize the gaps to be 500 bp from the center
+
+```{r}
+#define the center of gaps
+gaps_filtered <- gaps_filtered %>% mutate(center = start + floor(length/2))
+#standardize gaps
+gaps_filtered <- gaps_filtered %>%
+  mutate(start_std = center-250, end_std = center+250) %>% 
+  mutate(length_std = end_std - start_std)
+```
+
+Good let's save this preliminary gaps
+
+```{r}
+saveRDS(object = gaps_filtered, file = paste0(out_dir,"/gaps_standard_length_",date,".rds"))
+```
+
+```{r}
+#load gaps_filtered
+# gaps_filtered <- readRDS(file = paste0(out_dir,"/gaps_standard_length_",date,".rds"))
+```
+
+
+### Define negative samples
+
+Let's define 10,000 negative samples, which is similar to the number of HK-regions in the ABC analysis.
+
+```{r}
+set.seed(seed)
+negative_sampes <- gaps_filtered %>% 
+  mutate(chr = factor(as.character(chr), levels = paste0("chr",c(1:22,"X")))) %>%
+  sample_n(size = 10000, replace = FALSE) %>%
+  mutate(start = start_std, end = end_std) %>%
+  mutate(length = end - start) %>%
+  select(chr, start, end, length) %>% arrange(chr, start) %>%
+  droplevels()
+```
+
+Let's see the distribution of negative samples by chromosome
+
+```{r}
+cat("Number of gaps: \n")
+nrow(negative_sampes)
+summary(negative_sampes$length)
+cat("\nSummary of gaps' length: \n")
+summary(negative_sampes$length)
+negative_sampes %>% MyHistogram(x = "chr", stat = "count") + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Let's save the negative samples 
+
+```{r}
+saveRDS(object = negative_sampes, 
+        file = paste0(out_dir,"/negative_samples_",date,".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
