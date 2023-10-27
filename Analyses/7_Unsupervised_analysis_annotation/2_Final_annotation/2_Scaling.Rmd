@@ -1,0 +1,136 @@
+---
+title: "Scale low embeddings"
+author: "Martin loza"
+date: "2023/03/06"
+---
+
+In previous workflows I performed QC based on the percentage of Ns and the number of overlapping cell types for the histone markk and re-normalized the annotations.
+
+On this workflow I would like to scale the features for further analyses.
+
+This is the second loop
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(umap)
+library(bluster)
+library(igraph)
+library(scales)
+library(viridis)
+library(stringr)
+
+## Global variables
+date = "230306"
+seed = 777
+in_dir = "Data/annotated_filtered/loop_2"
+out_dir = in_dir
+my_color = "deepskyblue4"
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+```
+
+## Load regions
+
+Load annotations: histone, cpg, distance to nearest tss
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/u_regions_NS_filtered_normalized_230306.rds"))
+
+#short number of regions  
+test <- table(regions$type)[c("CTS", "NS", "HK")] == c(27752,300,10965)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS, CTS, and HK regions OK")
+}
+rm(test)
+```
+
+```{r}
+regions %>% MyHistogram(x = "n_celltypes", stat = "count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Set up
+
+Verify the type labels
+
+```{r}
+table(regions$type)
+```
+
+Verify the scaled features. Because I remove many regions, it would be nice to re-scale the data just in case
+
+```{r}
+sel_columns <- c("H3K27ac", "H3K4me1", "H3K4me3",
+                 "dist_to_nearest_transcript_norm")
+#short tests
+cat("Number of features: \n", length(sel_columns))
+cat("\nAll features in the regions' data frame OK: \n")
+sum(sel_columns %in% colnames(regions)) == length(sel_columns)
+```
+
+remove previous scaled data if existing
+
+```{r}
+idx <- which(str_detect(colnames(regions), pattern = "scaled"))
+if(length(idx) != 0){
+  regions <- regions[,-idx]
+}
+colnames(regions)
+rm(idx)
+```
+
+## Scaling
+
+Let's scale the data and re-assign them in the data frame
+
+```{r}
+#scale the features
+scaled_data <- scale(x = regions[, sel_columns], center = TRUE, scale = TRUE)
+#rename the columns
+colnames(scaled_data) <- paste0(colnames(scaled_data), "_scaled")
+#add scaled data to regions
+regions <- cbind(regions,scaled_data)
+colnames(regions)
+rm(scaled_data, sel_columns)
+```
+
+## Save data
+```{r}
+saveRDS(object = regions, file = paste0(out_dir,"/u_regions_NS_filtered_scaled_",date,".rds"))
+```
+
+Check the scaled features
+```{r fig.width=5}
+sel_regions <- regions
+sel_ann <- c("H3K27ac_scaled", "H3K4me1_scaled", "H3K4me3_scaled")
+fill = NULL
+plots <- list()
+
+for(ann in sel_ann){
+  label <- paste0("Normalized ",ann)
+  plots[[ann]] <- sel_regions %>%  MyHistogram(x = ann) + ggtitle(label)
+}
+(plots[[1]] + plots[[2]] + plots[[3]] & scale_y_continuous(trans = "sqrt")) + plot_layout(ncol = 3, guides = "collect")
+rm(label, ann,  fill, plots, sel_regions, sel_ann)
+```
+
+```{r fig.width=4}
+sel_regions <- regions
+sel_ann <- paste0(c("dist_to_nearest_transcript"), "_norm_scaled")
+fill = NULL
+plots <- list()
+
+for(ann in sel_ann){
+  label <- paste0("Normalized ",ann)
+  plots[[ann]] <- sel_regions %>%  MyHistogram(x = ann) + ggtitle(label)
+}
+(plots[[1]] & scale_y_continuous(trans = "sqrt")) + plot_layout(ncol = 2, guides = "collect")
+rm(label, ann,  fill, plots, sel_regions, sel_ann)
+```

@@ -1,0 +1,420 @@
+---
+title: "Annotation of low embeddings 2"
+author: "Martin loza"
+date: "2023/03/06"
+---
+
+
+In previous workflows I performed QC based on the percentage of Ns and the number of overlapping cell types for the histone marks. I normalized the annotations. Each annotations was independently analysed and the type of normalization were chose accordingly.
+I performed QC bases on PCA + clustering analysis and I obtained the low dimensionality embeddings. 
+
+On this workflow I would like to continue the unsupervised analysis of the low embeddings. The main goals are to annotate the regions and maybe finding something interesting.
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(umap)
+library(bluster)
+library(igraph)
+library(scales)
+library(viridis)
+library(stringr)
+
+## Global variables
+date = "230306"
+seed = 777
+in_dir = "Data/"
+out_dir = in_dir
+
+my_color <- "deepskyblue4"
+palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#6699CC",   "#AA4499", 
+                 "#888888", "#44AA99", "#999933", "#332288","#E69F00", "black", "blue", "gray", "deepskyblue4")
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+
+```
+
+## Load temporaly annotated regions
+
+Load annotations: histone, cpg, distance to nearest tss
+
+```{r}
+regions <- readRDS(file = "Data/annotated_filtered/regions_annotated_v0_230306.rds")
+
+#short number of regions  
+test <- table(regions$type)[c("CTS", "NS", "HK")] == c(31700,431,10965)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS, CTS, and HK regions OK")
+}
+rm(test)
+```
+
+## Set up
+
+```{r}
+colnames(regions)
+```
+
+We can observe that the regions already contain the embeddings and the results from the first clustering and labelling.
+Let's continue with the labelling process.
+
+In this analysis I will use only 4 main features
+
+```{r}
+#original features
+features <- c("H3K27ac"  , "H3K4me1", "H3K4me3",
+              "dist_to_nearest_transcript_norm")
+#scaled features
+features <- paste0(features, "_scaled")
+
+cat("Number of features: \n", length(features))
+cat("\nAll features in the data frame OK:\n", sum(features %in% colnames(regions)) == length(features) ) 
+cat("\nNAs in features OK: \n", any(!is.na(regions[,features])))
+```
+Previous annotations 
+
+```{r}
+p_size = 0.1
+regions %>% ggplot( mapping = aes(x = UMAP_1, y = UMAP_2, color = ann_v0)) + geom_point(size = p_size) + theme_bw() + coord_fixed() + LegendDotSize(size = 2)
+rm(p_size)
+```
+
+## Analysis of H3K4me3 negative samples
+
+Let's subset the selected regions 
+
+```{r}
+sel_regions <- subset(x = regions, subset = ann_v0 == "H3K4me3_negative")
+table(sel_regions$ann_v0)
+```
+
+Let's rescale and recalculate the PCA
+
+```{r}
+dims = 4
+tmp_features <- c("H3K27ac","H3K4me1","H3K4me3","dist_to_nearest_transcript_norm")
+#scaling
+sel_scaled <- scale(x = sel_regions[,tmp_features], center = TRUE, scale = TRUE)
+colnames(sel_scaled) <- paste0(tmp_features, "_scaled")
+#PCA
+set.seed(seed)
+sel_pca <- prcomp(x = sel_scaled, center = FALSE, scale. = FALSE, rank. = dims)
+plot(y = sel_pca$sdev, x = 1:length(sel_pca$sdev))
+sel_pca$rotation
+```
+
+Let's recalculate the UMAP
+```{r}
+set.seed(seed)
+sel_umap <- umap(d = sel_pca$x[,1:dims], preserve.seed = TRUE, method = 'umap-learn')
+colnames(sel_umap$layout) <- c("UMAP_1", "UMAP_2")
+```
+
+Remove previous scaling and embedding columns in selected regions 
+
+```{r}
+sel_regions <- sel_regions %>% RemoveColumn(column = c(paste0(tmp_features, "_scaled"), #scaled features 
+                                                       paste0("PC", 1:dims), #pca
+                                                       c("UMAP_1", "UMAP_2"))) #umap
+# colnames(sel_regions)
+```
+
+Let's assign the re-analized data 
+
+```{r}
+sel_regions <- cbind(sel_regions, sel_scaled, sel_pca$x, sel_umap$layout)
+# colnames(sel_regions)
+```
+
+Re-clustering
+
+```{r}
+set.seed(777)
+clusters <- ClusterLouvain(x = sel_regions[,paste0("PC", 1:dims)],
+                           resolution = 0.2, k = 30)
+table(clusters)
+sel_regions <- sel_regions %>% mutate(tmp_clusters = factor(clusters))
+rm(clusters)
+```
+
+Plot cluster's 
+
+```{r fig.width=4}
+p_size = 0.1
+#regions by number of cell types
+umap_columns <- c("UMAP_1",  "UMAP_2")
+p <- PlotGroups(object = sel_regions, group = "tmp_clusters",
+                dim1 = umap_columns[1],
+                dim2 = umap_columns[2],
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+for(i in seq_along(p)){
+  if(i == 1){
+    tmp_p <- p[[i]]
+  }else{
+    tmp_p <- tmp_p + p[[i]]
+  }
+}
+
+(tmp_p & theme_bw() & coord_fixed() &NoLegend()) + plot_layout(ncol = 3)
+
+rm(tmp, n, p_size)
+```
+
+Plot clusters
+
+```{r fig.width= 2}
+p_size = 0.1
+sel_regions %>% ggplot( mapping = aes(x = UMAP_1, y = UMAP_2, color = tmp_clusters)) + geom_point(size = p_size) + theme_bw() + coord_fixed() + LegendDotSize(size = 2)
+rm(p_size)
+```
+Plot features' violin plots
+
+```{r fig.width= 5}
+features <- c("H3K27ac", "H3K4me3","H3K4me1", "dist_to_nearest_transcript_norm")
+p <- list()
+for(f in features){
+   p[[f]] <- sel_regions %>%
+     MyViolinPlot(x = "tmp_clusters", y = f, fill_violin = "tmp_clusters", 
+                  fill = "white",box_width = 0.2) + ggtitle(f)
+}
+
+(p[[1]] + p[[2]] + p[[3]] + p[[4]] + plot_layout(guides = "collect", ncol = 2)) &theme(text = element_text(size = 16))
+rm(p, f)
+```
+
+Print summaries
+```{r}
+f <- features[4]
+cat(f,"\n")
+for(c in unique(sel_regions$tmp_clusters)){
+  cat("\nCluster ", c, " : \n")
+  print(summary( expm1((sel_regions %>% filter(tmp_clusters == c))[[f]])))
+}
+
+```
+
+Plot groups and feature plots
+
+```{r fig.width=4, fig.height=4}
+p_size = 0.2
+#regions by number of cell types
+umap_columns <- c("UMAP_1",  "UMAP_2")
+p <- PlotGroups(object = sel_regions, group = "type",
+                dim1 = umap_columns[1],
+                dim2 = umap_columns[2],
+                point_size = p_size, high_color = "red",order = TRUE, text_size = 18)
+
+#regions by features
+tmp <- sel_regions %>% mutate("Dim1" = UMAP_1, "Dim2" = UMAP_2) 
+pf <- list()
+for(n in paste0(features, "_scaled")){
+  pf[[n]] <- tmp %>% myFeaturePlot(feature = n, order = TRUE, point_size = p_size, text_size = 14, high_color = my_color) + NoAxis() + scale_colour_viridis_c(option = "magma") + ggtitle(n)
+}
+rm(tmp,n, p_size)
+```
+
+```{r fig.width=4}
+plot <- p$NS + p$CTS + p$HK +
+  pf[[1]] +  pf[[2]] + pf[[3]] +
+  pf[[4]] +
+  plot_layout(ncol = 2)  & 
+  coord_fixed() & NoAxis()
+
+plot
+# rm(pf,p, plot)
+```
+
+I think an initial classification would be:
+
+-C1: Enhancers_longDist: H3K27ac+, H3K4me1+, dist++  (median = 10184)
+-C2: Enhancer_Inactive_shortDist: H3K4me1+, dist- (median = 1957)
+-C3: Promoter_medDist: H3K27ac-, H3K4me3+, dist+ (median = 4798)
+-C4: Other_longDist: Negative main histones, dist++ (median = 22086)
+-C5: Other_Active_longDist: H3K27ac+, negative H3K4me1/H3K4me3, dist++ (median = 15354)
+
+Let's re-label the clusters
+```{r}
+sel_regions <- sel_regions %>% RelabelClusters(clusters = "tmp_clusters",
+                                               old_labels = c(1,2,3,4,5), 
+                                               new_labels = c("Enhancers_longDist",
+                                                              "Enhancer_Inactive_shortDist",
+                                                              "Promoter_medDist",
+                                                              "Other_longDist",
+                                                              "Other_Active_longDist"))
+```
+
+Let's check the plots again
+
+Plot cluster's 
+
+```{r fig.width=4}
+p_size = 0.1
+#regions by number of cell types
+umap_columns <- c("UMAP_1",  "UMAP_2")
+p <- PlotGroups(object = sel_regions, group = "tmp_clusters",
+                dim1 = umap_columns[1],
+                dim2 = umap_columns[2],
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+for(i in seq_along(p)){
+  if(i == 1){
+    tmp_p <- p[[i]]
+  }else{
+    tmp_p <- tmp_p + p[[i]]
+  }
+}
+
+(tmp_p & theme_bw() & coord_fixed() &NoLegend()) + plot_layout(ncol = 3)
+
+rm(tmp, n, p_size)
+```
+
+Plot features' violin plots
+
+```{r fig.width= 4, fig.height=3}
+features <- c("H3K27ac", "H3K4me3","H3K4me1", "dist_to_nearest_transcript_norm")
+p <- list()
+for(f in features){
+   p[[f]] <- sel_regions %>%
+     MyViolinPlot(x = "tmp_clusters", y = f, fill_violin = "tmp_clusters", 
+                  fill = "white",box_width = 0.2) + ggtitle(f)
+}
+
+(p[[1]] + p[[2]] + p[[3]] + p[[4]] + plot_layout (ncol = 2)) & NoLegend() &
+  theme(text = element_text(size = 14), axis.text.x = element_text(angle = 50, hjust = 1))
+rm(p, f)
+```
+ 
+```{r fig.width=6, fig.height=2}
+p1 <- sel_regions %>% group_by(tmp_clusters) %>% count(type) %>% ggplot(mapping = aes(x = tmp_clusters, y = n, fill = type)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+p2 <- sel_regions %>% group_by(type) %>% count(tmp_clusters) %>% ggplot(mapping = aes(x = type, y = n, fill = tmp_clusters)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+
+p1 + p2 
+```
+ 
+ They look OK.
+ 
+ Let's transfer these labels to the original regions.
+
+```{r}
+#let's create a temporal label for now
+regions$tmp_label <- as.character(regions$ann_v0)
+#in a simple way, let's check every region and transfer the new labels
+for(i in seq_len(nrow(sel_regions))){
+  #current region_id
+  id <- sel_regions[i,"region_id"]
+  #get the id's index in the larger data frame 
+  idx <- which(regions$region_id == id)
+  #assign the label
+  regions[idx,"tmp_label"] <- as.character(sel_regions[i,"tmp_clusters"])
+}
+
+rm(id, idx)
+```
+
+```{r}
+table(regions$ann_v0)
+table(regions$tmp_label)
+```
+Let's replace the ann_v0 annotations
+
+```{r}
+regions$ann_v0 <- factor(regions$tmp_label)
+regions <- regions %>% RemoveColumn(column = "tmp_label")
+table(regions$ann_v0)
+```
+## Annotation v0
+
+Let's re-order the labels 
+
+```{r}
+regions <- regions %>% mutate(ann_v0 = factor(x = as.character(ann_v0),
+                                        levels = c("H3K27ac_negative", "H3K4me1_negative",
+                                                   "Promoter_core", "Promoter", "Promoter_medDist",
+                                                   "Enhancer_medDist" , "Enhancer_longDist", 
+                                                   "Enhancers_longDist", "Enhancer_Inactive_shortDist",
+                                                   "Other", "Other_Active_longDist","Other_longDist")))
+```
+
+Plot features' violin plots
+
+```{r fig.width= 5}
+features <- paste0(c("H3K27ac", "H3K4me3","H3K4me1", "dist_to_nearest_transcript_norm"),"_scaled")
+p <- list()
+for(f in features){
+   p[[f]] <- regions %>%
+     MyViolinPlot(x = "ann_v0", y = f, fill_violin = "ann_v0", 
+                  fill = "white",box_width = 0.2) + ggtitle(f)
+}
+
+(p[[1]] + p[[2]] + p[[3]] + p[[4]] + plot_layout (ncol = 2)) & NoLegend() &
+  theme(text = element_text(size = 16), axis.text.x = element_text(angle = 50, hjust = 1))
+rm(p, f)
+```
+
+Plot annotations
+
+```{r fig.width=6}
+p_size = 0.1
+#regions by number of cell types
+umap_columns <- c("UMAP_1",  "UMAP_2")
+p <- PlotGroups(object = regions , group = "ann_v0",
+                dim1 = umap_columns[1],
+                dim2 = umap_columns[2],
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+for(i in seq_along(p)){
+  if(i == 1){
+    tmp_p <- p[[i]]
+  }else{
+    tmp_p <- tmp_p + p[[i]]
+  }
+}
+
+(tmp_p & theme_bw() & coord_fixed() &NoLegend() & NoAxis(keep_lines = TRUE)) + plot_layout(ncol = 4)
+
+rm(tmp, n, p_size)
+```
+
+```{r fig.width=6}
+p1 <- regions %>% group_by(ann_v0) %>% count(type) %>% ggplot(mapping = aes(x = ann_v0, y = n, fill = type)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+p2 <- regions %>% group_by(type) %>% count(ann_v0) %>% ggplot(mapping = aes(x = type, y = n, fill = ann_v0)) + geom_bar(position = "fill", stat = "identity") + scale_fill_manual(values = palette)
+
+p1 / p2 & theme(text = element_text(size = 14), axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+
+I think it's better to filter out the cluster "Other_longDistance" as they capture 30% of the NS. Also they seem to be related to CTSE. Also their histone mark levels are low compared to another regions, specially the levels of H3K27ac.
+
+I would also like to filter the regions clustered as H3K27ac negative, as they capture around 5% of the NS and, besides their low H3K27ac low levels, they are not significant in any of the other marks.
+
+For now I will keep the regions labelled as H3K4me1 and Others. These clusters are suspicious, but Others has medium levels of H3K4me3 and H3K4ME1 negative has good levels of H3K27ac (active regions)and a distance similar to promoters. 
+
+After the filtering I would need to re-normalize and re-scale, and re-embedd the data, but it's OK.
+
+```{r}
+regions <- regions %>% 
+  filter(ann_v0 != "Other_longDist") %>% 
+  filter(ann_v0 != "H3K27ac_negative")
+```
+
+```{r}
+table(regions$ann_v0)
+```
+save data
+
+```{r}
+saveRDS(object = regions,
+        file = paste0(out_dir, "/annotated_filtered/u_regions_NS_filtered_unsupervised_",date,".rds"))
+```
+
+
+
+
+
+

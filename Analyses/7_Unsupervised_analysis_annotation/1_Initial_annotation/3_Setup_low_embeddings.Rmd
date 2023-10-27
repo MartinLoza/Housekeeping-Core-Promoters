@@ -1,0 +1,150 @@
+---
+title: "Setup embeddings"
+author: "Martin loza"
+date: "2023/03/04"
+---
+
+In previous workflows I performed QC based on the percentage of Ns and the number of overlapping cell types for the histone marks.
+I normalized the annotations and scaled them after QC using NS and unsupervised analysis.
+
+On this workflow I would like to setup the embeddings to use in further studies. Calculating embeddings take a long time so it is a good idea to set them up so I don't have to calculated them every time I make a new analysis.
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(umap)
+library(bluster)
+library(igraph)
+library(scales)
+library(viridis)
+library(stringr)
+
+## Global variables
+date = "230304"
+seed = 777
+in_dir = "Data/"
+out_dir = in_dir
+my_color = "deepskyblue4"
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+```
+
+## Load regions
+
+Load annotations: histone, cpg, distance to nearest tss
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/annotated/u_regions_NS_filtered_scaled_230304.rds"))
+
+#short number of regions  
+test <- table(regions$type)[c("CTS", "NS", "HK")] == c(31700,431,10965)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS, CTS, and HK regions OK")
+}
+rm(test)
+```
+
+```{r}
+regions %>% MyHistogram(x = "n_celltypes", stat = "count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Set up
+
+Verify the type labels
+
+```{r}
+table(regions$type)
+```
+
+Let's remove any columns related to PCA or UMAP
+```{r}
+#remove columns related to PC. Umap columns are also related to UMAP
+idx <- which(str_detect(string = colnames(regions), pattern = "PC"))
+if(length(idx) != 0){
+  regions <- regions[,-idx]
+}
+idx <- which(str_detect(string = colnames(regions), pattern = "UMAP"))
+if(length(idx) != 0){
+  regions <- regions[,-idx]
+}
+colnames(regions)
+rm(idx)
+```
+
+### Embeddings
+
+Select features
+
+```{r}
+features <- c("H3K27ac_scaled", "H3K4me1_scaled", "H3K4me3_scaled",
+              "dist_to_nearest_transcript_norm_scaled")
+#short tests
+cat("Number of features: \n", length(features))
+cat("\nAll features in the data frame OK:\n", sum(features %in% colnames(regions)) == length(features) ) 
+cat("\nNAs in features OK: \n", any(!is.na(regions[,features])))
+```
+
+Get PCA coordinates
+
+```{r}
+#get PCA
+set.seed(seed)
+pca_data <- prcomp(x = regions[,features], center = FALSE, scale. = FALSE, rank. = length(features))
+#elbow plot
+plot(y = pca_data$sdev, x = 1:length(pca_data$sdev))
+#rotation
+pca_data$rotation
+```
+
+Select the coordinates and rename the columns: "low"(resolution) 
+
+```{r}
+pca_embeddings <- as.data.frame(pca_data$x)
+colnames(pca_embeddings)
+rm(pca_data)
+```
+
+Get UMAP coordinates
+
+```{r}
+dims = length(features)
+set.seed(seed)
+umap_data <- umap(d = pca_embeddings[,1:dims], preserve.seed = TRUE, method = 'umap-learn')
+#setup umap embeddings
+umap_embeddings <- as.data.frame(umap_data$layout)
+colnames(umap_embeddings) <- c("UMAP_1", "UMAP_2")
+embeddings <- cbind(pca_embeddings, umap_embeddings)
+rm(pca_embeddings, umap_embeddings, umap_data, dims)
+```
+
+Setup embeddings before saving
+
+```{r}
+rownames(embeddings) <- regions$region_id
+```
+
+Save embeddings
+
+```{r}
+saveRDS(object = embeddings, file = paste0(in_dir, "/embeddings/low_embeddings_", date, ".rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

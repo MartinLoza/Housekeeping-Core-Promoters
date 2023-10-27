@@ -1,0 +1,126 @@
+---
+title: "Transfer annotations"
+author: "Martin loza"
+date: "2023/03/17"
+---
+
+In previous analyses I annotated the regions using the main histones and the distance to the nearest gene. Now, I would like to transfer the annotations to the whole dataset
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(stringr)
+
+## Global variables
+date = "230317"
+seed = 777
+in_dir = "Data/annotated_filtered//loop_2/"
+out_dir = "Data/annotated/" 
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+
+```
+
+## Load data
+
+Load annotated regions
+
+```{r}
+regions_ann <- readRDS(file = paste0(in_dir, "/u_regions_NS_annotated_230306.rds"))
+
+#short number of regions  
+test <- table(regions_ann$type)[c("CTS", "NS", "HK")] == c(27737,300,10965)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS, CTS, and HK regions OK")
+}
+rm(test)
+```
+
+Load regions 
+
+```{r}
+regions <- readRDS(file = "Data/merged/merged_nearest_gene_221130.rds")
+```
+
+## Set up
+
+Let's remove the negative samples
+
+```{r}
+regions_ann <- regions_ann %>% filter(type != "NS")
+```
+
+During the annotation process we filtered-out suspicious regions that overlapped with NS and presented high levels of Ns 
+
+Let's filter these regions from the original dataset too
+
+```{r}
+keep_idx <- which(regions$region_id %in% regions_ann$region_id)
+regions <- regions[keep_idx,]
+rm(keep_idx)
+```
+
+Short test
+
+Number of unique regions 
+```{r}
+cat("Same number of unique regions? \n") 
+nrow(regions %>% filter(!duplicated(region_id))) == nrow(regions_ann)
+```
+
+## Transfer the annotations
+
+Let's transfer all the columns that we have in regions_ann but not in regions
+
+```{r}
+cols_idx <- which(! colnames(regions_ann) %in% colnames(regions))
+sel_cols <- colnames(regions_ann)[cols_idx]
+#let's remove columns I don't want to transfer
+sel_cols <- sel_cols[-which(sel_cols == "type")]
+sel_cols <- sel_cols[-which(sel_cols == "ann_v0")]
+sel_cols <- sel_cols[-which(sel_cols == "clusters_louvain_0.2")]
+regions <- TransferColumns(reference = regions, query = regions_ann,
+                           anchors = "region_id", cols_to_tranfer = sel_cols)
+rm(cols_idx, sel_cols)
+```
+
+It looks like there is some duplicated informations let's check this
+
+```{r}
+identical(regions$dist_to_closest_gene, regions$dist_to_nearest_transcript)
+identical(regions$closest_gene, regions$nearest_gene)
+identical(regions$closest_gene_id, regions$nearest_transcript_id)
+identical(regions$closest_gene_tss, regions$nearest_transcript_tss)
+```
+
+Let's remove the duplicated colums
+
+```{r}
+sel_columns <- c("dist_to_closest_gene", "closest_gene", "closest_gene_id", 'closest_gene_tss' )
+regions <- regions %>% RemoveColumn(column = sel_columns) 
+```
+
+
+```{r}
+colnames(regions)
+```
+
+## Save data
+
+```{r}
+saveRDS(object = regions, file = paste0(out_dir, "/all_regions_annotated_",date,".rds") )
+```
+
+
+
+
+
+
+

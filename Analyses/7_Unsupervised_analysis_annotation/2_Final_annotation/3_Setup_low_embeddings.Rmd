@@ -1,0 +1,212 @@
+---
+title: "Setup embeddings"
+author: "Martin loza"
+date: "2023/03/06"
+---
+
+In previous workflows I performed QC based on the percentage of Ns and the number of overlapping cell types for the histone marks.
+I normalized the annotations and scaled them after QC using NS and unsupervised analysis.
+
+On this workflow I would like to setup the different embeddings to use in further studies. Calculating embeddings take a long time so it is a good idea to set them up so I don't have to calculated them every time I make a new analysis.
+
+This is loop 2
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(umap)
+library(bluster)
+library(igraph)
+library(scales)
+library(viridis)
+library(stringr)
+
+## Global variables
+date = "230306"
+seed = 777
+in_dir = "Data/annotated_filtered/loop_2"
+out_dir = "Data/embeddings/loop_2/"
+my_color = "deepskyblue4"
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+```
+
+## Load regions
+
+Load annotations: histone, cpg, distance to nearest tss
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/u_regions_NS_filtered_scaled_230306.rds"))
+
+#short number of regions  
+test <- table(regions$type)[c("CTS", "NS", "HK")] == c(27752,300,10965)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS, CTS, and HK regions OK")
+}
+rm(test)
+```
+
+```{r}
+regions %>% MyHistogram(x = "n_celltypes", stat = "count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Set up
+
+Verify the type labels
+
+```{r}
+table(regions$type)
+```
+
+Let's remove any columns related to PCA or UMAP
+```{r}
+#remove columns related to PC. Umap columns are also related to UMAP
+idx <- which(str_detect(string = colnames(regions), pattern = "PC"))
+if(length(idx) != 0){
+  regions <- regions[,-idx]
+}
+idx <- which(str_detect(string = colnames(regions), pattern = "UMAP"))
+if(length(idx) != 0){
+  regions <- regions[,-idx]
+}
+colnames(regions)
+rm(idx)
+```
+
+## Embeddings
+
+I would like to calculate 3 different embeddings:
+- Low resolution: H3K27ac, H3K4me1, H3K4me3, and distance to TSS
+
+### Low resolution
+
+Select features
+
+```{r}
+features <- c("H3K27ac_scaled", "H3K4me1_scaled", "H3K4me3_scaled",
+              "dist_to_nearest_transcript_norm_scaled")
+#short tests
+cat("Number of features: \n", length(features))
+cat("\nAll features in the data frame OK:\n", sum(features %in% colnames(regions)) == length(features) ) 
+cat("\nNAs in features OK: \n", any(!is.na(regions[,features])))
+```
+Get PCA coordinates
+
+```{r}
+#get PCA
+set.seed(seed)
+pca_data <- prcomp(x = regions[,features], center = FALSE, scale. = FALSE, rank. = length(features))
+#elbow plot
+plot(y = pca_data$sdev, x = 1:length(pca_data$sdev))
+#rotation
+pca_data$rotation
+```
+
+Select the coordinates and rename the columns: "low"(resolution) 
+
+```{r}
+pca_embeddings <- as.data.frame(pca_data$x)
+colnames(pca_embeddings)
+rm(pca_data)
+```
+
+Get UMAP coordinates
+
+```{r}
+dims = length(features)
+set.seed(seed)
+umap_data <- umap(d = pca_embeddings[,1:dims], preserve.seed = TRUE, method = 'umap-learn')
+#setup umap embeddings
+umap_embeddings <- as.data.frame(umap_data$layout)
+colnames(umap_embeddings) <- c("UMAP_1", "UMAP_2")
+embeddings <- cbind(pca_embeddings, umap_embeddings)
+rm(pca_embeddings, umap_embeddings, umap_data, dims)
+```
+
+Setup embeddings before saving
+
+```{r}
+rownames(embeddings) <- regions$region_id
+```
+
+Save low embeddings
+
+```{r}
+saveRDS(object = embeddings, file = paste0(out_dir, "/low_embeddings_", date, ".rds"))
+```
+
+Let's visualize the low embeddings
+
+```{r}
+tmp_df <- cbind(regions, embeddings)
+```
+
+```{r fig.width=4, fig.height=4}
+p_size = 0.1
+p <- PlotGroups(object = tmp_df, group = "type", dim1 = "PC1", dim2 = "PC2",
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+
+p$NS + p$CTS + p$`2` + p$`5` + p$`10` +
+  p$`15` + p$`20` + p$`25` + p$`30` +
+  p$`35` + p$`40` + p$HK  +
+  plot_layout(nrow = 3) & NoLegend() & coord_fixed() & NoAxis() 
+rm(p, p_size)
+```
+
+Features plots
+
+```{r fig.width=4}
+p_size = 0.1
+umap_columns <- c("UMAP_1",  "UMAP_2")
+p <- PlotGroups(object = tmp_df, group = "type",
+                dim1 = umap_columns[1],
+                dim2 = umap_columns[2],
+                point_size = p_size, high_color = my_color,order = TRUE, text_size = 18)
+
+p$NS + p$CTS + p$`2` + p$`5` + p$`10` +
+  p$`15` + p$`20` + p$`25` + p$`30` +
+  p$`35` + p$`40` + p$HK  +
+  plot_layout(nrow = 3) & NoLegend() & coord_fixed() & NoAxis() 
+
+rm(umap_columns, p_size)
+```
+
+```{r}
+p_size = 0.1
+tmp <- tmp_df %>% mutate("Dim1" = UMAP_1, "Dim2" = UMAP_2) 
+pf <- list()
+for(n in features){
+  pf[[n]] <- tmp %>% myFeaturePlot(feature = n, order = TRUE, point_size = p_size, text_size = 14, high_color = my_color) + NoAxis() + scale_colour_viridis_c(option = "magma") + ggtitle(n)
+}
+rm(tmp, p_size)
+```
+
+```{r fig.width=8}
+p$NS + p$CTS + p$HK +
+  pf[[1]] +  pf[[2]] + pf[[3]] +
+  pf[[4]] +
+  plot_layout(ncol = 3)  & 
+  coord_fixed() & NoAxis()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

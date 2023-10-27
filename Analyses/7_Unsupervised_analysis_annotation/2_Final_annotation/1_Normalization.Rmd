@@ -1,0 +1,146 @@
+---
+title: "Re-normalization of annotated ABC + NS"
+author: "Martin loza"
+date: "2023/03/06"
+---
+
+In previous workflow I filter out regions using sub-clustering analysis. On this workflow I would like to re-normalize the data for further annotation analysis.
+
+This is the second loop in this sub-clustering annotation/QC
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+## Global variables
+date = "230306"
+seed = 777
+in_dir = "Data/annotated_filtered/"
+out_dir = "Data/annotated_filtered/loop_2"
+
+## Global functions
+source("Analysis/Functions.R")
+source("Analysis/Functions_Visualizations.r")
+
+#Local functions
+
+```
+
+## Load regions
+
+Load annotated regions 
+
+```{r}
+regions <- readRDS(file = paste0(in_dir, "/u_regions_NS_filtered_unsupervised_230306.rds"))
+
+#short number of regions  
+test <- table(regions$type)[c("CTS", "NS", "HK")] == c(27752,300,10965)
+if((!test[1]) | (!test[2])){
+  cat("Number of regions do not match!!!!")
+}else{
+  cat("Number of NS, CTS, and HK regions OK")
+}
+rm(test)
+```
+
+```{r}
+regions %>% MyHistogram(x = "n_celltypes", stat = "count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Analysis of annotations
+
+I would like to analyse how the normalization of features changes their distribution
+
+### Histones features
+
+```{r  fig.width=8}
+sel_regions <- regions
+
+sel_ann <- c("H3K27ac", "H3K4me1", "H3K4me3")
+fill = NULL
+plots <- list()
+for(ann in sel_ann){
+  plots[[ann]] <- sel_regions %>% MyHistogram(x = ann, fill = fill, position = "dodge") + ggtitle(ann)
+}
+(plots[[1]] + plots[[2]] + plots[[3]] & scale_y_continuous(trans = "sqrt")) + plot_layout(ncol = 3, guides = "collect")
+rm(label, ann,  fill, plots, sel_regions, sel_ann)
+```
+
+They look ok. No normalization on this case
+
+## Distance to nearest TSS
+
+I would like to compare with the abs distance
+```{r}
+tmp <- regions %>% mutate(abs_distance = abs(dist_to_nearest_transcript)) %>% mutate(distance_log = log1p(abs_distance))
+```
+
+```{r}
+summary(tmp$dist_to_closest_gene)
+summary(tmp$abs_distance)
+```
+
+```{r fig.width=4}
+p1 <- tmp %>% MyHistogram(x = "dist_to_nearest_transcript", n_bins = 200)+ xlim(c(-1e4,1e4))
+p2 <- tmp %>% MyHistogram(x = "abs_distance", n_bins = 200) + xlim(c(-200,1e4))
+p3 <- tmp %>% MyHistogram(x = "distance_log", n_bins = 500) 
+
+p1 / p2 / p3
+rm(p1, p2, p3)
+```
+
+Before I checked and it's not trivial to capture the behavior close to TSS with normalization. Then, if for now I will just calculate the log1p of the abs_distance.
+
+## Normalization
+
+Therefore, the next normalization/scaling will be performed
+
+- Histone marks: nothing
+- Distance to nearest TSS: abs + log1p
+
+```{r}
+#normalize the distance to nearest TSS: abs + log1p
+sel_ann <- c("dist_to_nearest_transcript")
+for(ann in sel_ann){
+  label = paste0(ann, "_norm")
+  regions[[label]] <- log1p(abs(regions[[ann]]))
+}
+rm(sel_ann, ann)
+```
+
+## Final distribution of annotations
+
+```{r fig.width=5}
+sel_regions <- regions
+sel_ann <- c("H3K27ac", "H3K4me1", "H3K4me3")
+fill = NULL
+plots <- list()
+
+for(ann in sel_ann){
+  label <- paste0("Normalized ",ann)
+  plots[[ann]] <- sel_regions %>%  MyHistogram(x = ann) + ggtitle(label)
+}
+(plots[[1]] + plots[[2]] + plots[[3]]  & scale_y_continuous(trans = "sqrt")) + plot_layout(ncol = 3, guides = "collect")
+rm(label, ann,  fill, plots, sel_regions, sel_ann)
+```
+
+```{r fig.width=4}
+sel_regions <- regions
+sel_ann <- paste0(c("dist_to_nearest_transcript"), "_norm")
+fill = NULL
+plots <- list()
+
+for(ann in sel_ann){
+  label <- paste0("Normalized ",ann)
+  plots[[ann]] <- sel_regions %>%  MyHistogram(x = ann) + ggtitle(label)
+}
+(plots[[1]] & scale_y_continuous(trans = "sqrt")) + plot_layout(ncol = 2, guides = "collect")
+rm(label, ann,  fill, plots, sel_regions, sel_ann)
+```
+
+## Save normalized regions
+
+```{r}
+saveRDS(object = regions, paste0(out_dir, "/u_regions_NS_filtered_normalized_", date, ".rds"))
+```
