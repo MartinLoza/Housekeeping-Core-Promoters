@@ -1,0 +1,207 @@
+---
+title: "Re-annotation of HK-CP"
+author: "Martin loza"
+date: "2023/04/13"
+---
+
+I would like to annotate the HK-CP using their nearest TSS from ENSEMBL
+
+```{r setup}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+library(rstatix)
+library(ggpubr)
+library(ggvenn)
+# library(ggVennDiagram)
+
+## Global variables
+date = "230413"
+seed = 777
+in_dir = "/Volumes/MARTIN_LOZA/Projects/Enhancer_Grammar/Data/"
+out_dir = "~/Documents/Projects/Enhancer_Grammar/Analysis/Weekly_analyses/2023_04/2023_04_18/Results/"
+
+## Global functions
+source("~/Documents/Projects/Enhancer_Grammar/Analysis/Functions.R")
+source("~/Documents/Projects/Enhancer_Grammar/Analysis/Functions_Visualizations.r")
+
+#Local functions
+```
+
+## Load data 
+
+Load the regions, HKG, and transcripts
+
+```{r}
+regions <- readRDS(file = paste0(in_dir,"v4/annotated/all_regions_annotated_230317.rds"))
+hkg <- readRDS(file = paste0(in_dir, "/Commonly_used/Housekeeping_genes/hg38_hk_genes_220715.rds"))
+transcripts <- readRDS(file = paste0(in_dir, "/Commonly_used/hg38/hg38_transcripts_universe_221121.rds"))
+genes_universe <- readRDS(file = paste0(in_dir, "/Commonly_used/hg38/hg38_genes_universe_221121.rds"))
+```
+
+## setup
+```{r}
+transcripts <- transcripts %>% mutate(id = paste0(chr,":",start,"-",end))
+transcripts <- transcripts %>% filter(chr %in% levels(regions$chr)) %>%
+  mutate(chr = factor(chr, levels = levels(regions$chr)))
+```
+
+## Analysis of gene content
+
+Let's verify that all the genes and hkg are contained in the transcripts universt
+
+```{r}
+abc_target_genes <- unique(regions$gene)
+nearest_genes <- unique(regions$nearest_gene)
+hk_genes <- unique(hkg$gene_name)
+transcripts_genes <- unique(transcripts$gene_name)
+universe_genes <- unique(genes_universe$gene_name)
+```
+
+```{r}
+cat("Number of transcripts not included in the genes universe: \n")
+sum(!transcripts_genes %in% universe_genes)
+cat("Number of target genes not included in the universe: \n")
+sum(!abc_target_genes %in% universe_genes)
+cat("Number of nearest genes not included in the universe: \n")
+sum(!nearest_genes %in% universe_genes)
+cat("Number of housekeeping genes not included in the universe: \n")
+sum(!hk_genes %in% universe_genes)
+```
+Everything looks OK, just 6 HKG not included in the universe
+
+```{r}
+ggvenn(list(Genes_Universe = universe_genes, Transcripts = transcripts_genes))
+ggvenn(list(Genes_Universe = universe_genes, ABC_targets = abc_target_genes))
+ggvenn(list(Genes_Universe = universe_genes, HKG = hk_genes))
+ggvenn(list(Genes_Universe = universe_genes, Nearest_TSS = nearest_genes))
+ggvenn(list(Transcripts = transcripts_genes,
+            ABC_targets = abc_target_genes,
+            HKG = hk_genes,
+            Nearest_TSS = nearest_genes))
+```
+
+Everything looks OK up to here
+
+## Re-annotate the core promoters
+
+I would like to annotate the regions based on their distance to the nearest transcripts
+
+```{r}
+#one histone roll around 146 bps, if we think that 2 nucleotides were remove, let's annotate the genes using a max distance of 300 bp
+max_distance = 300
+sel_features <- c("chr", "start", "end", "region_id", "length", "center")
+#get housekeeping regions
+cp <- regions %>% filter(n_celltypes == 50) %>% filter(ann_v1 == "CP") 
+u_cp <- cp %>% mutate(region_id_gene = paste0(region_id,"_",gene)) %>% dplyr::select(all_of(sel_features)) %>% GetUniqueRegions()
+```
+
+Let's get the genes around the max distances
+```{r}
+for(id in u_cp$region_id){
+  #get the current region
+  c_region <- u_cp %>% filter(region_id == id)
+  #get the current transcripts
+  current_transcripts <- transcripts %>% filter(chr == c_region$chr) %>%
+    mutate(abs_distance = abs(tss - c_region$center)) %>% filter(abs_distance <= max_distance) %>% arrange(abs_distance) %>% filter(!duplicated(gene_name))
+  
+  if(nrow(current_transcripts) == 0){
+    next
+  }
+  
+  #assign the new information
+  new_data <- current_transcripts %>% 
+    select(gene_name, tss, abs_distance, strand, gene_biotype)
+  new_data <- cbind(c_region[rep(1,nrow(new_data)),],new_data)
+  
+  if(nrow(new_data) > 1 & length(unique(new_data$strand)) > 1 ){ #we have a divergent
+    new_data[["divergent"]] <- TRUE
+  }else{
+    new_data[["divergent"]] <- FALSE
+  }
+  
+  if(!exists("new_cp")){
+    new_cp <- new_data
+  }else{
+    new_cp <- rbind(new_cp, new_data)
+  }
+}
+rm(id, c_region, current_transcripts, new_data)
+```
+
+```{r}
+# saveRDS(object = new_cp, file = paste0(out_dir,"/cp_new_gene_annotation_",date,".rds"))
+# new_cp <- readRDS(file = paste0(out_dir,"/cp_new_gene_annotation_",date,".rds"))
+rm(regions, genes_universe, transcripts, cp, u_hkr, u_cp, hkr, filtered_cp, nearest_genes)
+```
+
+### Setup re-annotated CP
+
+```{r}
+cat("Number of divergent CP: \n")
+new_cp %>% filter(!duplicated(region_id)) %>% pull(divergent) %>% table()
+cat("\nNumber of divergent CP related to HKG: \n")
+new_cp %>% filter(gene_name %in% hk_genes) %>% filter(!duplicated(region_id)) %>% pull(divergent) %>% table()
+```
+
+```{r}
+ggvenn(list("HKG" = hkg$gene_name, "HKG-CP" = new_cp$gene_name))
+```
+
+We capture around 94% of the HKG!! this is great because these regions are less than 300 bp from a TSS of a HKG!! Later I would like to make different comparison between these regions.
+
+Let's create a new label to easily identify those regions related to a HKG.
+
+```{r}
+new_cp <- new_cp %>% mutate(type = ifelse(gene_name %in% hk_genes, "HKG", "Other"))
+```
+
+I would like to identify the CP that regulate more than one annotated transcript:
+
+```{r}
+tmp <- new_cp %>% group_by(region_id) %>% count() %>% ungroup() %>% filter(n > 1)
+#add label of hybrid cp
+new_cp <- new_cp %>% mutate(multi_gene = ifelse(region_id %in% tmp$region_id, yes = TRUE, no = FALSE))
+new_cp %>% filter(!duplicated(region_id)) %>% count(multi_gene)
+rm(tmp)
+```
+
+I would like to identify hybrid divergent cp:
+
+- Hybrid: HKG/Other
+- Other: HKG/HKG, Other/Other
+
+```{r}
+tmp <- new_cp %>% filter(divergent) %>% group_by(region_id) %>% count(type) %>% filter(duplicated(region_id))
+new_cp <- new_cp %>% mutate(divergent_hybrid = ifelse(region_id %in% tmp$region_id, yes = TRUE, no = FALSE))
+rm(tmp)
+```
+
+I would like to identify which genes are HKG 
+
+```{r}
+new_cp <- new_cp %>% mutate(is_HKG = ifelse(gene_name %in% hkg$gene_name, yes = TRUE, no = FALSE))
+```
+
+Finally, what is the ditribution of genes
+
+```{r}
+new_cp %>% filter(!duplicated(gene_name)) %>% count(is_HKG)
+```
+
+Distribution of HKG and non-HKG
+
+```{r}
+new_cp %>% filter(!duplicated(gene_name)) %>% filter(is_HKG) %>% count(gene_biotype)
+new_cp %>% filter(!duplicated(gene_name)) %>% filter(!is_HKG)%>% count(gene_biotype)
+```
+## Save data
+
+```{r}
+saveRDS(object = new_cp, file = paste0(out_dir,"/cp_nearestTSS_annotated_",date,".rds"))
+```
+
+
+
+
